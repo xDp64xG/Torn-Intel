@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TornIntel Local Revive Request
 // @namespace    http://tampermonkey.net/
-// @version      0.4.8
+// @version      0.4.9
 // @description  Send local revive requests into TornIntel over a local HTTP listener.
 // @author       TornIntel
 // @match        https://www.torn.com/*
@@ -33,6 +33,7 @@
     const DISCOVERY_CACHE_MS = 5 * 60 * 1000;
     const NOTIFICATION_POLL_MS = 15000;
     const NOTICE_DURATION_MS = 25000;
+    const BUTTON_ID = 'tornintel-local-revive-btn';
 
     const trimSlash = url => String(url || '').replace(/\/+$/, '');
     const isHttpUrl = url => /^https?:\/\/.+/i.test(String(url || ''));
@@ -362,16 +363,58 @@
         return Boolean($('li[class*="user-status"][class*="Hospital"]'));
     };
 
+    const findButtonContainer = () => {
+        const selectors = [
+            '.buttons-wrap .buttons-list',
+            '.header-buttons-wrapper',
+            '.profile-container .buttons-wrap',
+            '.profile-container .profile-buttons',
+            '.profile-container .profile-container-content'
+        ];
+
+        for (const selector of selectors) {
+            const node = $(selector);
+            if (node) return node;
+        }
+
+        return null;
+    };
+
+    const applyButtonStyle = (btn, mode) => {
+        if (mode === 'floating') {
+            btn.style.cssText = [
+                'position:fixed',
+                'left:12px',
+                'bottom:16px',
+                'z-index:2147483646',
+                'padding:10px 12px',
+                'background:#b71c1c',
+                'color:#fff',
+                'border:none',
+                'border-radius:8px',
+                'cursor:pointer',
+                'font-weight:700',
+                'font-size:13px',
+                'box-shadow:0 10px 24px rgba(0,0,0,0.35)'
+            ].join(';');
+            return;
+        }
+
+        btn.style.cssText = 'margin:8px 0;padding:6px 12px;background:#b71c1c;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:bold;';
+    };
+
     const addButton = () => {
-        if ($('#tornintel-local-revive-btn')) return;
-        const container = $('.buttons-wrap .buttons-list') || $('.header-buttons-wrapper');
-        if (!container) return;
+        if ($(`#${BUTTON_ID}`)) return;
+        if (!document.body) return;
+
+        const container = findButtonContainer();
+        const mode = container ? 'inline' : 'floating';
 
         const btn = document.createElement('button');
-        btn.id = 'tornintel-local-revive-btn';
+        btn.id = BUTTON_ID;
         btn.type = 'button';
         btn.textContent = 'Local Revive Request';
-        btn.style.cssText = 'margin:8px 0;padding:6px 12px;background:#b71c1c;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:bold;';
+        applyButtonStyle(btn, mode);
 
         btn.onclick = async (event) => {
             event?.preventDefault?.();
@@ -455,7 +498,12 @@
             }
         };
 
-        container.appendChild(btn);
+        if (container) {
+            container.appendChild(btn);
+        } else {
+            document.body.appendChild(btn);
+            console.info('[TornIntel] Using floating revive button fallback (mobile/PDA container not found).');
+        }
     };
 
     const startNotificationPolling = () => {
