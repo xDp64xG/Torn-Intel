@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TornIntel Local Revive Request
 // @namespace    http://tampermonkey.net/
-// @version      0.4.12
+// @version      0.4.13
 // @description  Send local revive requests into TornIntel over a local HTTP listener.
 // @author       TornIntel
 // @match        https://www.torn.com/*
@@ -37,7 +37,7 @@
     const BUTTON_ID = 'tornintel-local-revive-btn';
     const ICON_ID = 'tornintel-local-revive-icon';
     const DEBUG_BADGE_ID = 'tornintel-local-revive-debug';
-    const ICON_POS_KEY = 'tornintel_local_revive_icon_position';
+    const ICON_POS_KEY = 'tornintel_local_revive_icon_position_v2';
     const BUTTON_RECHECK_MS = 2000;
     const ICON_DRAG_THRESHOLD = 8;
 
@@ -482,7 +482,8 @@
         try {
             const ua = String(navigator.userAgent || '');
             const touch = (navigator.maxTouchPoints || 0) > 0;
-            return touch || /Android|iPhone|iPad|iPod|Mobile|Torn\s*PDA/i.test(ua);
+            const narrowViewport = Math.max(window.innerWidth || 0, window.innerHeight || 0) <= 1024;
+            return touch || narrowViewport || /Android|iPhone|iPad|iPod|Mobile|Torn\s*PDA/i.test(ua);
         } catch {
             return false;
         }
@@ -521,19 +522,21 @@
             .tornintel-revive-icon {
                 position: fixed;
                 z-index: 2147483646;
-                width: 52px;
-                height: 52px;
+                min-width: 76px;
+                height: 44px;
                 border: none;
-                border-radius: 50%;
+                border-radius: 999px;
                 background: linear-gradient(180deg, #d12424 0%, #8f1414 100%);
                 color: #ffffff;
                 box-shadow: 0 10px 24px rgba(0, 0, 0, 0.45);
                 display: flex;
                 align-items: center;
                 justify-content: center;
-                font-size: 22px;
+                padding: 0 14px;
+                font-size: 13px;
                 font-weight: 800;
-                line-height: 1;
+                letter-spacing: 0.2px;
+                line-height: 1.1;
                 user-select: none;
                 -webkit-user-select: none;
                 touch-action: none;
@@ -648,7 +651,7 @@
         icon.id = ICON_ID;
         icon.type = 'button';
         icon.className = 'tornintel-revive-icon';
-        icon.textContent = '+';
+        icon.textContent = 'Revive';
         icon.title = 'Local Revive Request';
         icon.setAttribute('aria-label', 'Local Revive Request');
 
@@ -663,7 +666,7 @@
         const saved = readIconPosition();
         const fallback = {
             x: Math.max(8, window.innerWidth - rect.width - 12),
-            y: Math.max(8, window.innerHeight - rect.height - 20)
+            y: Math.max(8, (window.innerHeight * 0.5) - (rect.height * 0.5))
         };
         const position = clampIconPosition(
             saved?.x ?? fallback.x,
@@ -689,7 +692,7 @@
                 dragMoved = true;
                 state.iconDragging = true;
             }
-            const next = clampIconPosition(originX + dx, originY + dy, icon.offsetWidth || 52, icon.offsetHeight || 52);
+            const next = clampIconPosition(originX + dx, originY + dy, icon.offsetWidth || 76, icon.offsetHeight || 44);
             icon.style.left = `${next.x}px`;
             icon.style.top = `${next.y}px`;
         };
@@ -733,8 +736,8 @@
             const next = clampIconPosition(
                 Number.parseFloat(icon.style.left || '0') || 0,
                 Number.parseFloat(icon.style.top || '0') || 0,
-                icon.offsetWidth || 52,
-                icon.offsetHeight || 52
+                icon.offsetWidth || 76,
+                icon.offsetHeight || 44
             );
             icon.style.left = `${next.x}px`;
             icon.style.top = `${next.y}px`;
