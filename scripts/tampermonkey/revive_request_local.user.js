@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TornIntel Local Revive Request
 // @namespace    http://tampermonkey.net/
-// @version      0.4.1
+// @version      0.4.3
 // @description  Send local revive requests into TornIntel over a local HTTP listener.
 // @author       TornIntel
 // @match        https://www.torn.com/*
@@ -39,7 +39,8 @@
     const state = {
         activeBaseUrl: null,
         discoveryPromise: null,
-        notificationTimer: null
+        notificationTimer: null,
+        lastCandidates: []
     };
 
     const getOverrideBaseUrl = () => trimSlash(GM_getValue(BASE_URL_KEY, ''));
@@ -101,12 +102,12 @@
         });
     });
 
-    const fetchDiscoveredBaseUrl = async () => {
+    const fetchDiscoveredBaseUrl = async (forceRefresh = false) => {
         const now = Date.now();
         const cachedAt = Number(GM_getValue(DISCOVERED_BASE_URL_AT_KEY, 0));
         const cachedUrl = trimSlash(GM_getValue(DISCOVERED_BASE_URL_KEY, ''));
 
-        if (cachedUrl && cachedAt > 0 && (now - cachedAt) < DISCOVERY_CACHE_MS) {
+        if (!forceRefresh && cachedUrl && cachedAt > 0 && (now - cachedAt) < DISCOVERY_CACHE_MS) {
             return cachedUrl;
         }
 
@@ -138,8 +139,10 @@
         if (state.activeBaseUrl) return state.activeBaseUrl;
 
         const override = getOverrideBaseUrl();
-        const discovered = await fetchDiscoveredBaseUrl();
+        const discovered = await fetchDiscoveredBaseUrl(false);
         const candidates = unique([override, discovered, ...DEFAULT_BASE_URLS].map(trimSlash));
+        state.lastCandidates = candidates;
+        console.info('[TornIntel] Resolving revive listener endpoint', { override, discovered, candidates });
 
         for (const baseUrl of candidates) {
             if (!isHttpUrl(baseUrl)) continue;
@@ -147,6 +150,7 @@
                 const res = await gmRequest('GET', endpoint(baseUrl, '/health'));
                 if (res && res.ok) {
                     state.activeBaseUrl = baseUrl;
+                    console.info('[TornIntel] Selected revive listener endpoint', { baseUrl, source: 'candidate' });
                     return baseUrl;
                 }
             } catch (_err) {
@@ -154,7 +158,30 @@
             }
         }
 
-        throw new Error(`No reachable revive listener URL found. Tried: ${candidates.join(', ')}`);
+        // Cached discovery may be stale after endpoint changes; force one network refresh.
+        const refreshedDiscovered = await fetchDiscoveredBaseUrl(true);
+        const refreshedCandidates = unique([override, refreshedDiscovered, ...DEFAULT_BASE_URLS].map(trimSlash));
+        state.lastCandidates = refreshedCandidates;
+        console.info('[TornIntel] Retrying endpoint resolution after forced discovery refresh', {
+            override,
+            refreshedDiscovered,
+            refreshedCandidates
+        });
+        for (const baseUrl of refreshedCandidates) {
+            if (!isHttpUrl(baseUrl)) continue;
+            try {
+                const res = await gmRequest('GET', endpoint(baseUrl, '/health'));
+                if (res && res.ok) {
+                    state.activeBaseUrl = baseUrl;
+                    console.info('[TornIntel] Selected revive listener endpoint', { baseUrl, source: 'refreshed-candidate' });
+                    return baseUrl;
+                }
+            } catch (_err) {
+                // Try the next candidate.
+            }
+        }
+
+        throw new Error(`No reachable revive listener URL found. Tried: ${refreshedCandidates.join(', ')}`);
     };
 
     const checkListener = async () => {
@@ -243,11 +270,13 @@
                 }
 
                 try {
-                    await checkListener();
+                    const health = await checkListener();
+                    console.info('[TornIntel] Health check passed', { baseUrl: health.baseUrl });
                 } catch (err) {
                     alert([
                         'Revive listener is offline or unreachable.',
                         'Start it with: python main.py revive_listener serve --host 0.0.0.0 --port 8765',
+                        `Tried endpoints: ${state.lastCandidates.join(', ') || 'none'}`,
                         err.message
                     ].join('\n\n'));
                     return;
@@ -281,12 +310,18 @@
                     );
                     alert([
                         `Revive request saved locally as ${status}${by}`,
+                        `Endpoint: ${baseUrl}`,
                         request.fulfilled_by_name ? `Reviver: ${request.fulfilled_by_name}` : null,
                         request.revived_timestamp ? `Revived at: ${revivedAt}` : null,
                         payoutTemplate
                     ].filter(Boolean).join('\n\n'));
                 } catch (err) {
-                    alert(`Failed to save local revive request: ${err.message}`);
+                    alert([
+                        'Failed to save local revive request.',
+                        `Active endpoint: ${state.activeBaseUrl || 'none'}`,
+                        `Tried endpoints: ${state.lastCandidates.join(', ') || 'none'}`,
+                        err.message
+                    ].join('\n\n'));
                 }
             } catch (err) {
                 const message = err?.message || String(err);
