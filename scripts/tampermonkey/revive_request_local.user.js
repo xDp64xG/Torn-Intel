@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TornIntel Local Revive Request
 // @namespace    http://tampermonkey.net/
-// @version      0.4.13
+// @version      0.4.14
 // @description  Send local revive requests into TornIntel over a local HTTP listener.
 // @author       TornIntel
 // @match        https://www.torn.com/*
@@ -59,14 +59,67 @@
         bootedAt: Date.now()
     };
 
-    const getOverrideBaseUrl = () => trimSlash(GM_getValue(BASE_URL_KEY, ''));
-    const setOverrideBaseUrl = url => GM_setValue(BASE_URL_KEY, trimSlash(url));
+    const gmGetValue = (key, fallback = '') => {
+        try {
+            if (typeof GM_getValue === 'function') {
+                return GM_getValue(key, fallback);
+            }
+            const raw = window.localStorage.getItem(`ti:${key}`);
+            return raw === null ? fallback : raw;
+        } catch {
+            return fallback;
+        }
+    };
+
+    const gmSetValue = (key, value) => {
+        try {
+            if (typeof GM_setValue === 'function') {
+                GM_setValue(key, value);
+                return;
+            }
+            window.localStorage.setItem(`ti:${key}`, String(value));
+        } catch {
+            // Best effort fallback only.
+        }
+    };
+
+    const gmAddStyleSafe = (cssText) => {
+        if (!cssText) return;
+        try {
+            if (typeof GM_addStyle === 'function') {
+                GM_addStyle(cssText);
+                return;
+            }
+        } catch {
+            // Fall through to DOM style injection.
+        }
+
+        const style = document.createElement('style');
+        style.type = 'text/css';
+        style.textContent = String(cssText);
+        (document.head || document.documentElement || document.body).appendChild(style);
+    };
+
+    const gmRegisterMenuCommandSafe = (label, handler) => {
+        try {
+            if (typeof GM_registerMenuCommand === 'function') {
+                GM_registerMenuCommand(label, handler);
+                return true;
+            }
+        } catch {
+            // Ignore unsupported manager APIs.
+        }
+        return false;
+    };
+
+    const getOverrideBaseUrl = () => trimSlash(gmGetValue(BASE_URL_KEY, ''));
+    const setOverrideBaseUrl = url => gmSetValue(BASE_URL_KEY, trimSlash(url));
 
     const endpoint = (baseUrl, path) => `${trimSlash(baseUrl)}${path}`;
 
     const ensureNoticeStyles = () => {
         if (document.getElementById('tornintel-revive-notice-style')) return;
-        GM_addStyle(`
+        gmAddStyleSafe(`
             #tornintel-revive-notice-style {}
             .tornintel-revive-notice-stack {
                 position: fixed;
@@ -232,35 +285,67 @@
         showNotice(`Saved override revive listener URL: ${candidate}`, 'success');
     };
 
-    GM_registerMenuCommand('TornIntel: Set/Clear Revive Listener Override URL', configureEndpoint);
+    gmRegisterMenuCommandSafe('TornIntel: Set/Clear Revive Listener Override URL', configureEndpoint);
 
     const $ = (s, p = document) => p.querySelector(s);
 
     const gmRequest = (method, url, data = null, timeoutMs = 2500) => new Promise((resolve, reject) => {
-        GM_xmlhttpRequest({
-            method,
-            url,
-            headers: { 'Content-Type': 'application/json' },
-            data: data ? JSON.stringify(data) : undefined,
-            timeout: timeoutMs,
-            onload: r => {
-                if (r.status >= 200 && r.status < 300) {
-                    try {
-                        resolve(JSON.parse(r.responseText));
-                    } catch {
-                        resolve({ ok: true, raw: r.responseText });
+        if (typeof GM_xmlhttpRequest === 'function') {
+            GM_xmlhttpRequest({
+                method,
+                url,
+                headers: { 'Content-Type': 'application/json' },
+                data: data ? JSON.stringify(data) : undefined,
+                timeout: timeoutMs,
+                onload: r => {
+                    if (r.status >= 200 && r.status < 300) {
+                        try {
+                            resolve(JSON.parse(r.responseText));
+                        } catch {
+                            resolve({ ok: true, raw: r.responseText });
+                        }
+                    } else {
+                        reject(new Error(`HTTP ${r.status}`));
                     }
-                } else {
-                    reject(new Error(`HTTP ${r.status}`));
-                }
-            },
-            ontimeout: () => reject(new Error('Local listener timed out')),
-            onerror: () => reject(new Error('Local listener offline'))
+                },
+                ontimeout: () => reject(new Error('Local listener timed out')),
+                onerror: () => reject(new Error('Local listener offline'))
+            });
+            return;
+        }
+
+        const controller = new AbortController();
+        const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+        fetch(url, {
+            method,
+            headers: { 'Content-Type': 'application/json' },
+            body: data ? JSON.stringify(data) : undefined,
+            signal: controller.signal,
+            credentials: 'omit',
+            mode: 'cors'
+        }).then(async (res) => {
+            const text = await res.text();
+            if (!res.ok) {
+                throw new Error(`HTTP ${res.status}`);
+            }
+            try {
+                resolve(JSON.parse(text));
+            } catch {
+                resolve({ ok: true, raw: text });
+            }
+        }).catch((err) => {
+            if (String(err?.name || '').toLowerCase() === 'aborterror') {
+                reject(new Error('Local listener timed out'));
+                return;
+            }
+            reject(new Error('Local listener offline'));
+        }).finally(() => {
+            window.clearTimeout(timeoutId);
         });
     });
 
     const readCachedDiscoveredUrls = () => {
-        const cachedRaw = GM_getValue(DISCOVERED_BASE_URLS_KEY, '');
+        const cachedRaw = gmGetValue(DISCOVERED_BASE_URLS_KEY, '');
         if (cachedRaw) {
             try {
                 const parsed = JSON.parse(String(cachedRaw));
@@ -272,13 +357,13 @@
         }
 
         // Backward compatibility with old single-url cache.
-        const legacy = trimSlash(GM_getValue(DISCOVERED_BASE_URL_KEY, ''));
+        const legacy = trimSlash(gmGetValue(DISCOVERED_BASE_URL_KEY, ''));
         return normalizeUrls([legacy]);
     };
 
     const fetchDiscoveredBaseUrls = async (forceRefresh = false) => {
         const now = Date.now();
-        const cachedAt = Number(GM_getValue(DISCOVERED_BASE_URL_AT_KEY, 0));
+        const cachedAt = Number(gmGetValue(DISCOVERED_BASE_URL_AT_KEY, 0));
         const cachedUrls = readCachedDiscoveredUrls();
 
         if (!forceRefresh && cachedUrls.length > 0 && cachedAt > 0 && (now - cachedAt) < DISCOVERY_CACHE_MS) {
@@ -299,9 +384,9 @@
                 if (discoveredUrls.length === 0) {
                     return [];
                 }
-                GM_setValue(DISCOVERED_BASE_URLS_KEY, JSON.stringify(discoveredUrls));
-                GM_setValue(DISCOVERED_BASE_URL_KEY, discoveredUrls[0]);
-                GM_setValue(DISCOVERED_BASE_URL_AT_KEY, now);
+                gmSetValue(DISCOVERED_BASE_URLS_KEY, JSON.stringify(discoveredUrls));
+                gmSetValue(DISCOVERED_BASE_URL_KEY, discoveredUrls[0]);
+                gmSetValue(DISCOVERED_BASE_URL_AT_KEY, now);
                 return discoveredUrls;
             } catch {
                 return cachedUrls;
@@ -491,7 +576,7 @@
 
     const readIconPosition = () => {
         try {
-            const raw = String(GM_getValue(ICON_POS_KEY, ''));
+            const raw = String(gmGetValue(ICON_POS_KEY, ''));
             if (!raw) return null;
             const parsed = JSON.parse(raw);
             const x = Number(parsed?.x);
@@ -504,7 +589,7 @@
     };
 
     const saveIconPosition = (x, y) => {
-        GM_setValue(ICON_POS_KEY, JSON.stringify({ x: Math.round(x), y: Math.round(y) }));
+        gmSetValue(ICON_POS_KEY, JSON.stringify({ x: Math.round(x), y: Math.round(y) }));
     };
 
     const clampIconPosition = (x, y, width, height) => {
@@ -517,7 +602,7 @@
 
     const ensureIconStyles = () => {
         if (document.getElementById('tornintel-revive-icon-style')) return;
-        GM_addStyle(`
+        gmAddStyleSafe(`
             #tornintel-revive-icon-style {}
             .tornintel-revive-icon {
                 position: fixed;
