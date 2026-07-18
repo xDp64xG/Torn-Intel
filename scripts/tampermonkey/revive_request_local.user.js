@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TornIntel Local Revive Request
 // @namespace    http://tampermonkey.net/
-// @version      0.4.0
+// @version      0.4.1
 // @description  Send local revive requests into TornIntel over a local HTTP listener.
 // @author       TornIntel
 // @match        https://www.torn.com/*
@@ -169,9 +169,9 @@
     const parseIdFromHref = href => href?.match(/XID=(\d+)/)?.[1] || null;
 
     const getCurrentUser = () => {
-        const key = Object.keys(sessionStorage).find(k => /sidebarData\d+/.test(k));
-        if (!key) return { requester_name: null, requester_id: null };
         try {
+            const key = Object.keys(sessionStorage).find(k => /sidebarData\d+/.test(k));
+            if (!key) return { requester_name: null, requester_id: null };
             const data = JSON.parse(sessionStorage.getItem(key));
             return {
                 requester_name: data?.user?.name || null,
@@ -209,73 +209,93 @@
 
         const btn = document.createElement('button');
         btn.id = 'tornintel-local-revive-btn';
+        btn.type = 'button';
         btn.textContent = 'Local Revive Request';
         btn.style.cssText = 'margin:8px 0;padding:6px 12px;background:#b71c1c;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:bold;';
 
-        btn.onclick = async () => {
-            const { requester_name, requester_id } = getCurrentUser();
-            const { target_id, target_name } = getProfileTarget();
+        btn.onclick = async (event) => {
+            event?.preventDefault?.();
+            event?.stopPropagation?.();
 
-            if (!requester_id || !requester_name) {
-                alert('Could not determine your Torn user identity.');
-                return;
-            }
-
-            if (!target_id && !target_name) {
-                alert('Could not determine target identity.');
-                return;
-            }
-
-            if (!inHospital()) {
-                alert('Target is not currently shown as hospitalized.');
-                return;
-            }
+            if (btn.dataset.busy === '1') return;
+            btn.dataset.busy = '1';
+            const previousText = btn.textContent;
+            btn.textContent = 'Submitting...';
+            btn.disabled = true;
 
             try {
-                await checkListener();
-            } catch (err) {
-                alert([
-                    'Revive listener is offline or unreachable.',
-                    'Start it with: python main.py revive_listener serve --host 0.0.0.0 --port 8765',
-                    err.message
-                ].join('\n\n'));
-                return;
-            }
+                const { requester_name, requester_id } = getCurrentUser();
+                const { target_id, target_name } = getProfileTarget();
 
-            const payload = {
-                requested_at: Math.floor(Date.now() / 1000),
-                requester_name,
-                requester_id,
-                target_id,
-                target_name,
-                source: 'tampermonkey-local',
-                notes: `Requested from ${window.location.href}`,
-            };
+                if (!requester_id || !requester_name) {
+                    alert('Could not determine your Torn user identity.');
+                    return;
+                }
 
-            try {
-                const baseUrl = await resolveBaseUrl();
-                const res = await gmRequest('POST', endpoint(baseUrl, '/revive-request'), payload);
-                if (!res.ok) throw new Error(res.error || 'unknown_error');
-                const request = res.request || {};
-                const status = request.status || 'pending';
-                const by = request.fulfilled_by_name ? ` by ${request.fulfilled_by_name}` : '';
-                const revivedAt = request.revived_timestamp
-                    ? new Date(request.revived_timestamp * 1000).toLocaleString()
-                    : 'unknown time';
-                const payoutTemplate = buildPayoutTemplate(
+                if (!target_id && !target_name) {
+                    alert('Could not determine target identity.');
+                    return;
+                }
+
+                if (!inHospital()) {
+                    alert('Target is not currently shown as hospitalized.');
+                    return;
+                }
+
+                try {
+                    await checkListener();
+                } catch (err) {
+                    alert([
+                        'Revive listener is offline or unreachable.',
+                        'Start it with: python main.py revive_listener serve --host 0.0.0.0 --port 8765',
+                        err.message
+                    ].join('\n\n'));
+                    return;
+                }
+
+                const payload = {
+                    requested_at: Math.floor(Date.now() / 1000),
                     requester_name,
-                    target_name || `target ${target_id || '?'}`,
-                    request.fulfilled_by_name || 'unknown reviver',
-                    revivedAt
-                );
-                alert([
-                    `Revive request saved locally as ${status}${by}`,
-                    request.fulfilled_by_name ? `Reviver: ${request.fulfilled_by_name}` : null,
-                    request.revived_timestamp ? `Revived at: ${revivedAt}` : null,
-                    payoutTemplate
-                ].filter(Boolean).join('\n\n'));
+                    requester_id,
+                    target_id,
+                    target_name,
+                    source: 'tampermonkey-local',
+                    notes: `Requested from ${window.location.href}`,
+                };
+
+                try {
+                    const baseUrl = await resolveBaseUrl();
+                    const res = await gmRequest('POST', endpoint(baseUrl, '/revive-request'), payload);
+                    if (!res.ok) throw new Error(res.error || 'unknown_error');
+                    const request = res.request || {};
+                    const status = request.status || 'pending';
+                    const by = request.fulfilled_by_name ? ` by ${request.fulfilled_by_name}` : '';
+                    const revivedAt = request.revived_timestamp
+                        ? new Date(request.revived_timestamp * 1000).toLocaleString()
+                        : 'unknown time';
+                    const payoutTemplate = buildPayoutTemplate(
+                        requester_name,
+                        target_name || `target ${target_id || '?'}`,
+                        request.fulfilled_by_name || 'unknown reviver',
+                        revivedAt
+                    );
+                    alert([
+                        `Revive request saved locally as ${status}${by}`,
+                        request.fulfilled_by_name ? `Reviver: ${request.fulfilled_by_name}` : null,
+                        request.revived_timestamp ? `Revived at: ${revivedAt}` : null,
+                        payoutTemplate
+                    ].filter(Boolean).join('\n\n'));
+                } catch (err) {
+                    alert(`Failed to save local revive request: ${err.message}`);
+                }
             } catch (err) {
-                alert(`Failed to save local revive request: ${err.message}`);
+                const message = err?.message || String(err);
+                console.error('[TornIntel] revive request button error', err);
+                alert(`Unexpected error in revive request script: ${message}`);
+            } finally {
+                btn.dataset.busy = '0';
+                btn.textContent = previousText;
+                btn.disabled = false;
             }
         };
 
