@@ -764,12 +764,31 @@ Windows quick check for the listener machine:
 
 Automatic endpoint discovery behavior:
 - The script fetches `scripts/tampermonkey/revive_request_endpoint.json` from GitHub raw.
-- If `base_url` is reachable (`/health`), it uses that endpoint automatically.
+- If `base_urls` is present, it tries each URL in order and picks the first one that passes `/health`.
+- If only `base_url` is present, it uses that single URL (legacy format).
 - If not reachable, it falls back to `http://127.0.0.1:8765` and `http://localhost:8765`.
 
 To publish one endpoint for everyone (no user setup):
-- Update `scripts/tampermonkey/revive_request_endpoint.json` with your listener URL, for example `http://192.168.1.50:8765` (LAN) or a DNS name.
+- Update `scripts/tampermonkey/revive_request_endpoint.json` with one or more listener URLs.
+- For mixed environments (outside + LAN), publish a public URL first, then your LAN URL as fallback.
+- Example:
+
+```json
+{
+  "base_urls": [
+    "https://revive-listener.yourdomain.com",
+    "http://10.0.0.52:8765"
+  ],
+  "base_url": "http://10.0.0.52:8765"
+}
+```
+
 - Commit and push. Installed userscripts will auto-pick the new endpoint.
+
+For users outside your LAN, a private LAN IP (like `10.x.x.x` or `192.168.x.x`) is never reachable directly.
+Use one of these for the first `base_urls` entry:
+- A public DNS name/IP with router port-forwarding (TCP 8765) to your listener machine.
+- A tunnel URL (for example Cloudflare Tunnel or ngrok) that forwards to `http://127.0.0.1:8765`.
 
 Optional admin override (not needed for normal users):
 - Tampermonkey menu command: `TornIntel: Set/Clear Revive Listener Override URL`

@@ -64,6 +64,24 @@ class ReviveRequestListener:
             )
             logger.info(payout_template)
 
+        def log_new_request(request, source):
+            target = highlight(row_value(request, "target_name") or f"Target {row_value(request, 'target_id') or '?'}")
+            requester = highlight(row_value(request, "requester_name") or f"Requester {row_value(request, 'requester_id') or '?'}")
+            requested_at = int(row_value(request, "requested_timestamp") or row_value(request, "created_at") or time.time())
+            requested_text = time.strftime("%m-%d %H:%M:%S", time.localtime(requested_at)) if requested_at else "unknown time"
+            request_id = muted(str(row_value(request, "request_id") or "?"))
+            source_text = muted(str(row_value(request, "source") or source or "external"))
+            notes = row_value(request, "notes")
+
+            logger.info(
+                f"{info('Revive request received')} [{source}] {target} by {requester} at {success(requested_text)} ({request_id})"
+            )
+            logger.info(
+                "Revive request details: "
+                f"request_id={request_id} | requester={requester} | target={target} | "
+                f"source={source_text} | notes={muted(str(notes)) if notes else muted('-')}"
+            )
+
         def emit_notification(event_type, request, extra=None):
             payload = dict(request)
             if extra:
@@ -76,6 +94,35 @@ class ReviveRequestListener:
                     f"Queued revive notification {event_type} for request={row_value(notification, 'request_id')}"
                 )
             return notification
+
+        def log_notification_delivery(notification):
+            event_type = str(row_value(notification, "event_type") or "revive_request_fulfilled").lower()
+            target = highlight(row_value(notification, "target_name") or f"Target {row_value(notification, 'target_id') or '?'}")
+            requester = highlight(row_value(notification, "requester_name") or f"Requester {row_value(notification, 'requester_id') or '?'}")
+            requested_at = int(row_value(notification, "requested_timestamp") or row_value(notification, "created_at") or 0)
+            requested_text = time.strftime("%m-%d %H:%M:%S", time.localtime(requested_at)) if requested_at else "unknown time"
+
+            if event_type in ("revive_request_received", "request_received"):
+                logger.info(
+                    f"{info('Revive request received')} {target} by {requester} at {success(requested_text)} "
+                    f"({muted(str(row_value(notification, 'request_id') or '?'))})"
+                )
+                logger.info(
+                    f"Request details: requester={requester} | target={target} | source={muted(str(row_value(notification, 'source') or '-'))} | "
+                    f"notes={muted(str(row_value(notification, 'notes') or '-'))}"
+                )
+                return
+
+            reviver = success(row_value(notification, "fulfilled_by_name") or str(row_value(notification, "fulfilled_by_id") or "unknown reviver"))
+            revived_at = int(row_value(notification, "revived_timestamp") or row_value(notification, "fulfilled_at") or 0)
+            revived_text = time.strftime("%m-%d %H:%M:%S", time.localtime(revived_at)) if revived_at else "unknown time"
+            logger.info(
+                f"{info('Revive request fulfilled')} {target} by {reviver} at {success(revived_text)} "
+                f"({muted(str(row_value(notification, 'request_id') or '?'))})"
+            )
+            logger.info(
+                f"Fulfillment details: requester={requester} | target={target} | reviver={reviver} | revived_at={success(revived_text)}"
+            )
 
         def legacy_notifications(requester_id=None, requester_name=None, limit=10):
             rows = repo.get_unnotified_fulfilled(
@@ -132,6 +179,10 @@ class ReviveRequestListener:
                         wait_seconds = max(0, int(query.get("wait", [0])[0] or 0))
                         limit = int(query.get("limit", [10])[0] or 10)
 
+                        logger.info(
+                            f"Notification request query requester_id={requester_id or '-'} requester_name={requester_name or '-'} limit={limit} wait={wait_seconds}s"
+                        )
+
                         def load_notifications():
                             rows = repo.get_notifications(
                                 requester_id=int(requester_id) if requester_id not in (None, "") else None,
@@ -161,6 +212,24 @@ class ReviveRequestListener:
                                 requester_name=requester_name,
                                 limit=limit,
                             )
+
+                        if payload:
+                            summary_bits = []
+                            for notification in payload:
+                                event_type = str(notification.get("event_type") or "revive_request_fulfilled").lower()
+                                request_id = notification.get("request_id") or "?"
+                                target_name = notification.get("target_name") or f"Target {notification.get('target_id') or '?'}"
+                                requester_text = notification.get("requester_name") or f"Requester {notification.get('requester_id') or '?'}"
+                                summary_bits.append(f"{event_type}:{request_id}:{target_name}:{requester_text}")
+                            logger.info(
+                                f"Served {len(payload)} notification(s): {' | '.join(summary_bits)}"
+                            )
+                        else:
+                            logger.info("Served 0 notifications for this request")
+
+                        for notification in payload:
+                            log_notification_delivery(notification)
+
                         self._send_json(200, {"ok": True, "notifications": payload})
                         return
 
@@ -186,10 +255,29 @@ class ReviveRequestListener:
 
                 try:
                     request_row = self._normalize_request_payload(payload)
+                    logger.info(
+                        "Incoming revive request payload: "
+                        f"requester={request_row.get('requester_name') or request_row.get('requester_id') or '-'} | "
+                        f"target={request_row.get('target_name') or request_row.get('target_id') or '-'} | "
+                        f"source={request_row.get('source') or '-'} | notes={request_row.get('notes') or '-'}"
+                    )
                     request_id = repo.create_request(request_row)
                     saved_request = repo.get(request_id)
+                    logger.info(
+                        "Revive request stored: "
+                        f"request_id={request_id} | "
+                        f"requester={request_row.get('requester_name') or request_row.get('requester_id') or '-'} | "
+                        f"target={request_row.get('target_name') or request_row.get('target_id') or '-'} | "
+                        f"source={request_row.get('source') or '-'} | "
+                        f"status={request_row.get('status') or '-'}"
+                    )
                     if saved_request:
+                        log_new_request(saved_request, "post")
                         emit_notification("revive_request_received", saved_request, extra={"source_event": "post"})
+                    else:
+                        logger.info(
+                            "Revive request lookup after insert returned no row; using request payload for logging only"
+                        )
                     fulfilled_rows = repo.reconcile_against_database(
                         window_seconds=int(payload.get("window_seconds") or window_seconds),
                         limit=1,
@@ -197,8 +285,19 @@ class ReviveRequestListener:
                     )
 
                     for fulfilled in fulfilled_rows:
+                        logger.info(
+                            "Incoming request fulfilled during POST reconcile: "
+                            f"request_id={row_value(fulfilled, 'request_id') or '-'} | "
+                            f"target={row_value(fulfilled, 'target_name') or row_value(fulfilled, 'target_id') or '-'} | "
+                            f"fulfilled_by={row_value(fulfilled, 'fulfilled_by_name') or row_value(fulfilled, 'fulfilled_by_id') or '-'}"
+                        )
                         emit_notification("revive_request_fulfilled", fulfilled, extra={"source_event": "reconcile"})
                         log_fulfilled_request(fulfilled, "request")
+
+                    if fulfilled_rows:
+                        logger.info(f"Revive request POST reconcile matched {len(fulfilled_rows)} request(s)")
+                    else:
+                        logger.info("Revive request POST reconcile matched 0 request(s)")
 
                     rows = repo.db.select(
                         "SELECT * FROM revive_requests WHERE request_id = ? LIMIT 1",
@@ -282,6 +381,12 @@ class ReviveRequestListener:
                 )
 
                 for fulfilled in matched_rows:
+                    logger.info(
+                        "Queued fulfillment from poll: "
+                        f"request_id={row_value(fulfilled, 'request_id') or '-'} | "
+                        f"target={row_value(fulfilled, 'target_name') or row_value(fulfilled, 'target_id') or '-'} | "
+                        f"fulfilled_by={row_value(fulfilled, 'fulfilled_by_name') or row_value(fulfilled, 'fulfilled_by_id') or '-'}"
+                    )
                     emit_notification("revive_request_fulfilled", fulfilled, extra={"source_event": "poll"})
                     log_fulfilled_request(fulfilled, "poll")
 

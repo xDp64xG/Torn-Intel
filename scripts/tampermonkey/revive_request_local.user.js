@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TornIntel Local Revive Request
 // @namespace    http://tampermonkey.net/
-// @version      0.4.5
+// @version      0.4.7
 // @description  Send local revive requests into TornIntel over a local HTTP listener.
 // @author       TornIntel
 // @match        https://www.torn.com/*
@@ -28,6 +28,7 @@
     const DISCOVERY_URL = 'https://raw.githubusercontent.com/xDp64xG/Torn-Intel/main/scripts/tampermonkey/revive_request_endpoint.json';
     const BASE_URL_KEY = 'tornintel_revive_listener_base_url_override';
     const DISCOVERED_BASE_URL_KEY = 'tornintel_revive_listener_base_url_discovered';
+    const DISCOVERED_BASE_URLS_KEY = 'tornintel_revive_listener_base_urls_discovered';
     const DISCOVERED_BASE_URL_AT_KEY = 'tornintel_revive_listener_base_url_discovered_at';
     const DISCOVERY_CACHE_MS = 5 * 60 * 1000;
     const NOTIFICATION_POLL_MS = 15000;
@@ -35,6 +36,8 @@
     const trimSlash = url => String(url || '').replace(/\/+$/, '');
     const isHttpUrl = url => /^https?:\/\/.+/i.test(String(url || ''));
     const unique = values => [...new Set(values.filter(Boolean))];
+    const normalizeUrls = values => unique((Array.isArray(values) ? values : [values]).map(trimSlash).filter(isHttpUrl));
+    const isLocalFallbackUrl = url => /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(trimSlash(url));
 
     const state = {
         activeBaseUrl: null,
@@ -102,13 +105,30 @@
         });
     });
 
-    const fetchDiscoveredBaseUrl = async (forceRefresh = false) => {
+    const readCachedDiscoveredUrls = () => {
+        const cachedRaw = GM_getValue(DISCOVERED_BASE_URLS_KEY, '');
+        if (cachedRaw) {
+            try {
+                const parsed = JSON.parse(String(cachedRaw));
+                const urls = normalizeUrls(parsed);
+                if (urls.length > 0) return urls;
+            } catch {
+                // Fall through to legacy key.
+            }
+        }
+
+        // Backward compatibility with old single-url cache.
+        const legacy = trimSlash(GM_getValue(DISCOVERED_BASE_URL_KEY, ''));
+        return normalizeUrls([legacy]);
+    };
+
+    const fetchDiscoveredBaseUrls = async (forceRefresh = false) => {
         const now = Date.now();
         const cachedAt = Number(GM_getValue(DISCOVERED_BASE_URL_AT_KEY, 0));
-        const cachedUrl = trimSlash(GM_getValue(DISCOVERED_BASE_URL_KEY, ''));
+        const cachedUrls = readCachedDiscoveredUrls();
 
-        if (!forceRefresh && cachedUrl && cachedAt > 0 && (now - cachedAt) < DISCOVERY_CACHE_MS) {
-            return cachedUrl;
+        if (!forceRefresh && cachedUrls.length > 0 && cachedAt > 0 && (now - cachedAt) < DISCOVERY_CACHE_MS) {
+            return cachedUrls;
         }
 
         if (state.discoveryPromise) {
@@ -118,15 +138,19 @@
         state.discoveryPromise = (async () => {
             try {
                 const res = await gmRequest('GET', DISCOVERY_URL);
-                const candidate = trimSlash(res?.base_url || '');
-                if (!isHttpUrl(candidate)) {
-                    return '';
+                const discoveredUrls = normalizeUrls([
+                    ...(Array.isArray(res?.base_urls) ? res.base_urls : []),
+                    res?.base_url || ''
+                ]);
+                if (discoveredUrls.length === 0) {
+                    return [];
                 }
-                GM_setValue(DISCOVERED_BASE_URL_KEY, candidate);
+                GM_setValue(DISCOVERED_BASE_URLS_KEY, JSON.stringify(discoveredUrls));
+                GM_setValue(DISCOVERED_BASE_URL_KEY, discoveredUrls[0]);
                 GM_setValue(DISCOVERED_BASE_URL_AT_KEY, now);
-                return candidate;
+                return discoveredUrls;
             } catch {
-                return cachedUrl || '';
+                return cachedUrls;
             } finally {
                 state.discoveryPromise = null;
             }
@@ -136,11 +160,12 @@
     };
 
     const resolveBaseUrl = async () => {
-        if (state.activeBaseUrl) return state.activeBaseUrl;
+        // Keep a validated remote/LAN endpoint sticky, but do not keep localhost sticky.
+        if (state.activeBaseUrl && !isLocalFallbackUrl(state.activeBaseUrl)) return state.activeBaseUrl;
 
         const override = getOverrideBaseUrl();
-        const discovered = await fetchDiscoveredBaseUrl(false);
-        const candidates = unique([override, discovered, ...DEFAULT_BASE_URLS].map(trimSlash));
+        const discovered = await fetchDiscoveredBaseUrls(false);
+        const candidates = unique([override, ...discovered, ...DEFAULT_BASE_URLS].map(trimSlash));
         state.lastCandidates = candidates;
         console.info('[TornIntel] Resolving revive listener endpoint', { override, discovered, candidates });
 
@@ -159,8 +184,8 @@
         }
 
         // Cached discovery may be stale after endpoint changes; force one network refresh.
-        const refreshedDiscovered = await fetchDiscoveredBaseUrl(true);
-        const refreshedCandidates = unique([override, refreshedDiscovered, ...DEFAULT_BASE_URLS].map(trimSlash));
+        const refreshedDiscovered = await fetchDiscoveredBaseUrls(true);
+        const refreshedCandidates = unique([override, ...refreshedDiscovered, ...DEFAULT_BASE_URLS].map(trimSlash));
         state.lastCandidates = refreshedCandidates;
         console.info('[TornIntel] Retrying endpoint resolution after forced discovery refresh', {
             override,
