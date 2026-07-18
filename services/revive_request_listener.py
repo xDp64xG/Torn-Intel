@@ -6,8 +6,9 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from modules.revives.sync import ReviveSync
@@ -35,6 +36,7 @@ class ReviveRequestListener:
         logger = self.services.logger
         repo = self.repo
         syncer = ReviveSync(self.services)
+        notification_condition = threading.Condition()
 
         def row_value(row, field, default=None):
             if row is None:
@@ -68,6 +70,8 @@ class ReviveRequestListener:
                 payload.update(extra)
             notification = repo.queue_notification(event_type, request, payload=payload)
             if notification:
+                with notification_condition:
+                    notification_condition.notify_all()
                 logger.info(
                     f"Queued revive notification {event_type} for request={row_value(notification, 'request_id')}"
                 )
@@ -125,19 +129,37 @@ class ReviveRequestListener:
                         query = parse_qs(parsed.query)
                         requester_id = query.get("requester_id", [None])[0]
                         requester_name = query.get("requester_name", [None])[0]
-                        rows = repo.get_notifications(
-                            requester_id=int(requester_id) if requester_id not in (None, "") else None,
-                            requester_name=requester_name,
-                            limit=int(query.get("limit", [10])[0] or 10),
-                        )
-                        if rows:
-                            payload = [dict(row) for row in rows]
-                            repo.mark_notifications_notified([row["notification_id"] for row in rows])
-                        else:
+                        wait_seconds = max(0, int(query.get("wait", [0])[0] or 0))
+                        limit = int(query.get("limit", [10])[0] or 10)
+
+                        def load_notifications():
+                            rows = repo.get_notifications(
+                                requester_id=int(requester_id) if requester_id not in (None, "") else None,
+                                requester_name=requester_name,
+                                limit=limit,
+                            )
+                            if rows:
+                                payload_rows = [dict(row) for row in rows]
+                                repo.mark_notifications_notified([row["notification_id"] for row in rows])
+                                return payload_rows
+                            return []
+
+                        payload = load_notifications()
+                        if not payload and wait_seconds > 0:
+                            deadline = time.time() + wait_seconds
+                            while time.time() < deadline and not payload:
+                                with notification_condition:
+                                    remaining = deadline - time.time()
+                                    if remaining <= 0:
+                                        break
+                                    notification_condition.wait(timeout=min(remaining, 1.0))
+                                payload = load_notifications()
+
+                        if not payload:
                             payload = legacy_notifications(
                                 requester_id=int(requester_id) if requester_id not in (None, "") else None,
                                 requester_name=requester_name,
-                                limit=int(query.get("limit", [10])[0] or 10),
+                                limit=limit,
                             )
                         self._send_json(200, {"ok": True, "notifications": payload})
                         return
@@ -228,7 +250,7 @@ class ReviveRequestListener:
                     "raw_payload": payload,
                 }
 
-        server = HTTPServer((host, port), Handler)
+        server = ThreadingHTTPServer((host, port), Handler)
         server.timeout = 1
         logger.info(f"Revive request listener running on http://{host}:{port}")
         if host in ("127.0.0.1", "localhost"):

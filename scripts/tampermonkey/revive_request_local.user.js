@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TornIntel Local Revive Request
 // @namespace    http://tampermonkey.net/
-// @version      0.4.4
+// @version      0.4.5
 // @description  Send local revive requests into TornIntel over a local HTTP listener.
 // @author       TornIntel
 // @match        https://www.torn.com/*
@@ -79,13 +79,13 @@
 
     const $ = (s, p = document) => p.querySelector(s);
 
-    const gmRequest = (method, url, data = null) => new Promise((resolve, reject) => {
+    const gmRequest = (method, url, data = null, timeoutMs = 2500) => new Promise((resolve, reject) => {
         GM_xmlhttpRequest({
             method,
             url,
             headers: { 'Content-Type': 'application/json' },
             data: data ? JSON.stringify(data) : undefined,
-            timeout: 2500,
+            timeout: timeoutMs,
             onload: r => {
                 if (r.status >= 200 && r.status < 300) {
                     try {
@@ -370,16 +370,31 @@
     const startNotificationPolling = () => {
         if (state.notificationTimer) return;
 
+        let pollInFlight = false;
+
+        const schedulePoll = (delayMs = 0) => {
+            if (state.notificationTimer) {
+                window.clearTimeout(state.notificationTimer);
+            }
+            state.notificationTimer = window.setTimeout(poll, delayMs);
+        };
+
         const poll = async () => {
+            if (pollInFlight) return;
+            pollInFlight = true;
             const { requester_name, requester_id } = getCurrentUser();
-            if (!requester_id && !requester_name) return;
+            if (!requester_id && !requester_name) {
+                pollInFlight = false;
+                schedulePoll(5000);
+                return;
+            }
 
             try {
                 const baseUrl = await resolveBaseUrl();
                 const query = requester_id
-                    ? `?requester_id=${encodeURIComponent(requester_id)}&limit=10`
-                    : `?requester_name=${encodeURIComponent(requester_name)}&limit=10`;
-                const res = await gmRequest('GET', `${endpoint(baseUrl, '/revive-request/notifications')}${query}`);
+                    ? `?requester_id=${encodeURIComponent(requester_id)}&limit=10&wait=25`
+                    : `?requester_name=${encodeURIComponent(requester_name)}&limit=10&wait=25`;
+                const res = await gmRequest('GET', `${endpoint(baseUrl, '/revive-request/notifications')}${query}`, null, 30000);
                 if (!res || !res.ok || !Array.isArray(res.notifications)) return;
 
                 for (const item of res.notifications) {
@@ -387,11 +402,13 @@
                 }
             } catch (_err) {
                 // Listener offline should not spam alerts during passive polling.
+            } finally {
+                pollInFlight = false;
+                schedulePoll(0);
             }
         };
 
-        state.notificationTimer = window.setInterval(poll, NOTIFICATION_POLL_MS);
-        poll();
+        schedulePoll(0);
     };
 
     addButton();
