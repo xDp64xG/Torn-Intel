@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TornIntel Local Revive Request
 // @namespace    http://tampermonkey.net/
-// @version      0.4.17
+// @version      0.4.18
 // @description  Send local revive requests into TornIntel over a local HTTP listener.
 // @author       TornIntel
 // @match        https://www.torn.com/*
@@ -229,6 +229,7 @@
             `Viewport: ${window.innerWidth}x${window.innerHeight}`,
             `Body ready: ${Boolean(document.body)}`,
             `Mobile mode: ${isMobileClient()}`,
+            `Transport: ${typeof GM_xmlhttpRequest === 'function' ? 'GM_xmlhttpRequest' : 'fetch_fallback'}`,
             `Button exists: ${Boolean(document.getElementById(BUTTON_ID))}`,
             `Icon exists: ${Boolean(document.getElementById(ICON_ID))}`,
             `PDA bar button exists: ${Boolean(document.getElementById(PDA_BAR_BUTTON_ID))}`,
@@ -332,8 +333,16 @@
                     }
                 },
                 ontimeout: () => reject(new Error('Local listener timed out')),
-                onerror: () => reject(new Error('Local listener offline'))
+                onerror: () => reject(new Error(`Request failed via GM_xmlhttpRequest (${method} ${url})`))
             });
+            return;
+        }
+
+        if (window.location.protocol === 'https:' && String(url).toLowerCase().startsWith('http://')) {
+            reject(new Error(
+                `Blocked insecure endpoint from HTTPS page (${method} ${url}). ` +
+                'Use an HTTPS endpoint (for example Cloudflare tunnel URL) for mobile PDA.'
+            ));
             return;
         }
 
@@ -361,7 +370,11 @@
                 reject(new Error('Local listener timed out'));
                 return;
             }
-            reject(new Error('Local listener offline'));
+            const detail = err?.message ? String(err.message) : 'unknown_network_error';
+            reject(new Error(
+                `Fetch request failed (${method} ${url}): ${detail}. ` +
+                'Possible causes: CORS blocked, mixed-content HTTP blocked, tunnel offline, or endpoint unreachable.'
+            ));
         }).finally(() => {
             window.clearTimeout(timeoutId);
         });
