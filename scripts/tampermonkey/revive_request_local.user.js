@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TornIntel Local Revive Request
 // @namespace    http://tampermonkey.net/
-// @version      0.4.7
+// @version      0.4.8
 // @description  Send local revive requests into TornIntel over a local HTTP listener.
 // @author       TornIntel
 // @match        https://www.torn.com/*
@@ -32,6 +32,7 @@
     const DISCOVERED_BASE_URL_AT_KEY = 'tornintel_revive_listener_base_url_discovered_at';
     const DISCOVERY_CACHE_MS = 5 * 60 * 1000;
     const NOTIFICATION_POLL_MS = 15000;
+    const NOTICE_DURATION_MS = 25000;
 
     const trimSlash = url => String(url || '').replace(/\/+$/, '');
     const isHttpUrl = url => /^https?:\/\/.+/i.test(String(url || ''));
@@ -51,6 +52,83 @@
 
     const endpoint = (baseUrl, path) => `${trimSlash(baseUrl)}${path}`;
 
+    const ensureNoticeStyles = () => {
+        if (document.getElementById('tornintel-revive-notice-style')) return;
+        GM_addStyle(`
+            #tornintel-revive-notice-style {}
+            .tornintel-revive-notice-stack {
+                position: fixed;
+                right: 16px;
+                bottom: 16px;
+                z-index: 2147483647;
+                display: flex;
+                flex-direction: column;
+                gap: 8px;
+                width: min(420px, calc(100vw - 24px));
+                pointer-events: none;
+            }
+            .tornintel-revive-notice {
+                pointer-events: auto;
+                border: 1px solid rgba(255, 255, 255, 0.16);
+                border-left-width: 4px;
+                border-radius: 8px;
+                background: rgba(19, 24, 31, 0.96);
+                color: #f3f7fb;
+                box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35);
+                padding: 10px 12px;
+                font-size: 13px;
+                line-height: 1.35;
+                white-space: pre-line;
+                opacity: 0;
+                transform: translateY(8px);
+                transition: opacity 180ms ease, transform 180ms ease;
+            }
+            .tornintel-revive-notice.is-visible {
+                opacity: 1;
+                transform: translateY(0);
+            }
+            .tornintel-revive-notice--info { border-left-color: #4ea1ff; }
+            .tornintel-revive-notice--success { border-left-color: #39d98a; }
+            .tornintel-revive-notice--error { border-left-color: #ff6b6b; }
+        `);
+        const styleTag = document.createElement('style');
+        styleTag.id = 'tornintel-revive-notice-style';
+        styleTag.textContent = '';
+        document.head.appendChild(styleTag);
+    };
+
+    const getNoticeStack = () => {
+        ensureNoticeStyles();
+        let stack = document.getElementById('tornintel-revive-notice-stack');
+        if (!stack) {
+            stack = document.createElement('div');
+            stack.id = 'tornintel-revive-notice-stack';
+            stack.className = 'tornintel-revive-notice-stack';
+            document.body.appendChild(stack);
+        }
+        return stack;
+    };
+
+    const showNotice = (message, kind = 'info', durationMs = NOTICE_DURATION_MS) => {
+        if (!message) return;
+        const stack = getNoticeStack();
+        const notice = document.createElement('div');
+        notice.className = `tornintel-revive-notice tornintel-revive-notice--${kind}`;
+        notice.textContent = String(message);
+        stack.appendChild(notice);
+
+        requestAnimationFrame(() => {
+            notice.classList.add('is-visible');
+        });
+
+        window.setTimeout(() => {
+            notice.classList.remove('is-visible');
+            window.setTimeout(() => {
+                notice.remove();
+            }, 220);
+        }, Math.max(20000, Number(durationMs) || NOTICE_DURATION_MS));
+    };
+
     const configureEndpoint = () => {
         const current = getOverrideBaseUrl() || state.activeBaseUrl || '';
         const input = window.prompt(
@@ -64,18 +142,18 @@
         if (!candidate) {
             setOverrideBaseUrl('');
             state.activeBaseUrl = null;
-            alert('Cleared override URL. Automatic endpoint discovery is now enabled.');
+            showNotice('Cleared override URL. Automatic endpoint discovery is now enabled.', 'info');
             return;
         }
 
         if (!isHttpUrl(candidate)) {
-            alert('Invalid URL. Example: http://192.168.1.50:8765');
+            showNotice('Invalid URL. Example: http://192.168.1.50:8765', 'error');
             return;
         }
 
         setOverrideBaseUrl(candidate);
         state.activeBaseUrl = null;
-        alert(`Saved override revive listener URL: ${candidate}`);
+        showNotice(`Saved override revive listener URL: ${candidate}`, 'success');
     };
 
     GM_registerMenuCommand('TornIntel: Set/Clear Revive Listener Override URL', configureEndpoint);
@@ -248,19 +326,19 @@
         ].join('\n');
     };
 
-    const showNotificationAlert = item => {
+    const showNotificationNotice = item => {
         const eventType = String(item.event_type || 'revive_request_fulfilled').toLowerCase();
         const target = item.target_name || `Target ${item.target_id || '?'}`;
         const requester = item.requester_name || 'requester';
 
         if (eventType === 'revive_request_received' || eventType === 'request_received') {
-            alert([
+            showNotice([
                 `New revive request received for ${target}`,
                 `Requester: ${requester}`,
                 item.notes ? `Notes: ${item.notes}` : null,
                 item.source ? `Source: ${item.source}` : null,
                 item.requested_timestamp ? `Requested at: ${new Date(item.requested_timestamp * 1000).toLocaleString()}` : null
-            ].filter(Boolean).join('\n\n'));
+            ].filter(Boolean).join('\n\n'), 'info');
             return;
         }
 
@@ -270,12 +348,12 @@
             : 'unknown time';
         const payoutTemplate = buildPayoutTemplate(requester, target, reviver, revivedAt);
 
-        alert([
+        showNotice([
             `Revive fulfilled for ${target}`,
             `Reviver: ${reviver}`,
             `Revived at: ${revivedAt}`,
             payoutTemplate
-        ].join('\n\n'));
+        ].join('\n\n'), 'success');
     };
 
     const inHospital = () => {
@@ -310,17 +388,17 @@
                 const { target_id, target_name } = getProfileTarget();
 
                 if (!requester_id || !requester_name) {
-                    alert('Could not determine your Torn user identity.');
+                    showNotice('Could not determine your Torn user identity.', 'error');
                     return;
                 }
 
                 if (!target_id && !target_name) {
-                    alert('Could not determine target identity.');
+                    showNotice('Could not determine target identity.', 'error');
                     return;
                 }
 
                 if (!inHospital()) {
-                    alert('Target is not currently shown as hospitalized.');
+                    showNotice('Target is not currently shown as hospitalized.', 'error');
                     return;
                 }
 
@@ -328,12 +406,12 @@
                     const health = await checkListener();
                     console.info('[TornIntel] Health check passed', { baseUrl: health.baseUrl });
                 } catch (err) {
-                    alert([
+                    showNotice([
                         'Revive listener is offline or unreachable.',
                         'Start it with: python main.py revive_listener serve --host 0.0.0.0 --port 8765',
                         `Tried endpoints: ${state.lastCandidates.join(', ') || 'none'}`,
                         err.message
-                    ].join('\n\n'));
+                    ].join('\n\n'), 'error');
                     return;
                 }
 
@@ -353,35 +431,23 @@
                     if (!res.ok) throw new Error(res.error || 'unknown_error');
                     const request = res.request || {};
                     const status = request.status || 'pending';
-                    const by = request.fulfilled_by_name ? ` by ${request.fulfilled_by_name}` : '';
-                    const revivedAt = request.revived_timestamp
-                        ? new Date(request.revived_timestamp * 1000).toLocaleString()
-                        : 'unknown time';
-                    const payoutTemplate = buildPayoutTemplate(
-                        requester_name,
-                        target_name || `target ${target_id || '?'}`,
-                        request.fulfilled_by_name || 'unknown reviver',
-                        revivedAt
-                    );
-                    alert([
-                        `Revive request saved locally as ${status}${by}`,
+                    showNotice([
+                        `Revive request sent as ${status}.`,
                         `Endpoint: ${baseUrl}`,
-                        request.fulfilled_by_name ? `Reviver: ${request.fulfilled_by_name}` : null,
-                        request.revived_timestamp ? `Revived at: ${revivedAt}` : null,
-                        payoutTemplate
-                    ].filter(Boolean).join('\n\n'));
+                        'Listener will post lifecycle updates automatically.'
+                    ].filter(Boolean).join('\n\n'), status === 'fulfilled' ? 'success' : 'info');
                 } catch (err) {
-                    alert([
+                    showNotice([
                         'Failed to save local revive request.',
                         `Active endpoint: ${state.activeBaseUrl || 'none'}`,
                         `Tried endpoints: ${state.lastCandidates.join(', ') || 'none'}`,
                         err.message
-                    ].join('\n\n'));
+                    ].join('\n\n'), 'error');
                 }
             } catch (err) {
                 const message = err?.message || String(err);
                 console.error('[TornIntel] revive request button error', err);
-                alert(`Unexpected error in revive request script: ${message}`);
+                showNotice(`Unexpected error in revive request script: ${message}`, 'error');
             } finally {
                 btn.dataset.busy = '0';
                 btn.textContent = previousText;
@@ -423,7 +489,7 @@
                 if (!res || !res.ok || !Array.isArray(res.notifications)) return;
 
                 for (const item of res.notifications) {
-                    showNotificationAlert(item);
+                    showNotificationNotice(item);
                 }
             } catch (_err) {
                 // Listener offline should not spam alerts during passive polling.
