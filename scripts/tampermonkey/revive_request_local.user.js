@@ -13,7 +13,7 @@
 // @grant        GM_registerMenuCommand
 // @homepageURL  https://github.com/xDp64xG/Torn-Intel
 // @supportURL   https://github.com/xDp64xG/Torn-Intel/issues
-// Ping Check
+// Ping 
 // @updateURL    https://raw.githubusercontent.com/xDp64xG/Torn-Intel/main/scripts/tampermonkey/revive_request_local.user.js
 // @downloadURL  https://raw.githubusercontent.com/xDp64xG/Torn-Intel/main/scripts/tampermonkey/revive_request_local.user.js
 // ==/UserScript==
