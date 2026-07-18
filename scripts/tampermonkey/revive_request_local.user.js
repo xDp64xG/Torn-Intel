@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TornIntel Local Revive Request
 // @namespace    http://tampermonkey.net/
-// @version      0.4.16
+// @version      0.4.17
 // @description  Send local revive requests into TornIntel over a local HTTP listener.
 // @author       TornIntel
 // @match        https://www.torn.com/*
@@ -41,6 +41,7 @@
     const ICON_POS_KEY = 'tornintel_local_revive_icon_position_v2';
     const BUTTON_RECHECK_MS = 2000;
     const ICON_DRAG_THRESHOLD = 8;
+    const DEBUG_DIAGNOSTIC_DELAY_MS = 8000;
 
     const trimSlash = url => String(url || '').replace(/\/+$/, '');
     const isHttpUrl = url => /^https?:\/\/.+/i.test(String(url || ''));
@@ -57,7 +58,25 @@
         buttonRecheckTimer: null,
         iconDragging: false,
         lastError: null,
-        bootedAt: Date.now()
+        bootedAt: Date.now(),
+        debugPopupShown: false,
+        mountPasses: 0
+    };
+
+    const debugLog = (message, popup = false) => {
+        const line = `[TornIntel][debug] ${message}`;
+        console.info(line);
+        if (popup) {
+            showNotice(`DEBUG\n${message}`, 'error', 30000);
+        }
+    };
+
+    const hasVisibleControl = () => {
+        return Boolean(
+            document.getElementById(BUTTON_ID) ||
+            document.getElementById(PDA_BAR_BUTTON_ID) ||
+            document.getElementById(ICON_ID)
+        );
     };
 
     const gmGetValue = (key, fallback = '') => {
@@ -642,7 +661,10 @@
         if (document.getElementById(PDA_BAR_BUTTON_ID)) return true;
 
         const statsAnchor = findPdaStatsAnchor();
-        if (!statsAnchor) return false;
+        if (!statsAnchor) {
+            debugLog('PDA bar mount skipped: stats anchor not found');
+            return false;
+        }
 
         const parent = statsAnchor.parentElement;
         if (!parent) return false;
@@ -670,6 +692,7 @@
         state.lastError = null;
         ensureDebugBadge();
         console.info('[TornIntel] PDA bar Revive button mounted near stats anchor.');
+        debugLog('PDA bar Revive button mounted near stats anchor');
         return true;
     };
 
@@ -830,6 +853,8 @@
         if (document.getElementById(ICON_ID)) return;
         if (!document.body) return;
 
+        debugLog(`Trying draggable mobile icon mount (force=${force})`);
+
         ensureIconStyles();
         const icon = document.createElement('button');
         icon.id = ICON_ID;
@@ -939,6 +964,7 @@
         state.lastError = null;
         ensureDebugBadge();
         console.info('[TornIntel] Draggable mobile revive icon mounted.');
+        debugLog('Draggable mobile icon mounted');
     };
 
     const addButton = () => {
@@ -976,6 +1002,29 @@
     };
 
     const startButtonMounting = () => {
+        const emitDelayedDiagnosticsIfMissing = () => {
+            window.setTimeout(() => {
+                if (state.debugPopupShown) return;
+                if (hasVisibleControl()) return;
+
+                state.debugPopupShown = true;
+                const statsAnchorFound = Boolean(findPdaStatsAnchor());
+                const details = [
+                    'No revive control mounted after startup delay.',
+                    `mobile=${isMobileClient()}`,
+                    `body=${Boolean(document.body)}`,
+                    `statsAnchor=${statsAnchorFound}`,
+                    `pointerEvent=${Boolean(window.PointerEvent)}`,
+                    `gmRequest=${typeof GM_xmlhttpRequest === 'function'}`,
+                    `gmMenu=${typeof GM_registerMenuCommand === 'function'}`,
+                    `lastError=${state.lastError || '-'}`,
+                    `mountPasses=${state.mountPasses}`
+                ].join(' | ');
+
+                debugLog(details, true);
+            }, DEBUG_DIAGNOSTIC_DELAY_MS);
+        };
+
         const boot = () => {
             if (!document.body) {
                 window.setTimeout(boot, 250);
@@ -983,6 +1032,8 @@
             }
 
             try {
+                state.mountPasses += 1;
+                debugLog(`Mount pass ${state.mountPasses} started`);
                 ensureDebugBadge();
                 addButton();
 
@@ -995,6 +1046,10 @@
                 if (!document.getElementById(BUTTON_ID) && !document.getElementById(PDA_BAR_BUTTON_ID) && !document.getElementById(ICON_ID)) {
                     addDraggableMobileIcon(true);
                 }
+
+                debugLog(
+                    `Mount pass ${state.mountPasses} result: button=${Boolean(document.getElementById(BUTTON_ID))}, pdaBar=${Boolean(document.getElementById(PDA_BAR_BUTTON_ID))}, icon=${Boolean(document.getElementById(ICON_ID))}`
+                );
             } catch (err) {
                 reportScriptError('boot', err);
             }
@@ -1037,6 +1092,7 @@
             }
         };
 
+        emitDelayedDiagnosticsIfMissing();
         boot();
     };
 
