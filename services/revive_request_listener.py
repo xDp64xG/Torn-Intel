@@ -185,6 +185,10 @@ class ReviveRequestListener:
         server = HTTPServer((host, port), Handler)
         server.timeout = 1
         logger.info(f"Revive request listener running on http://{host}:{port}")
+        if host in ("127.0.0.1", "localhost"):
+            logger.info(
+                "Listener is bound to localhost only. For other computers, run with --host 0.0.0.0 and use this machine's LAN IP in Tampermonkey."
+            )
         logger.info(f"Pending revive requests will be polled every {poll_seconds}s")
 
         next_poll_at = time.time() + poll_seconds

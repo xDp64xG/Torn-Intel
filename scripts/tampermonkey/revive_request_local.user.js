@@ -1,13 +1,16 @@
 // ==UserScript==
 // @name         TornIntel Local Revive Request
 // @namespace    http://tampermonkey.net/
-// @version      0.2.0
+// @version      0.4.0
 // @description  Send local revive requests into TornIntel over a local HTTP listener.
 // @author       TornIntel
 // @match        https://www.torn.com/*
-// @connect      127.0.0.1
+// @connect      *
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_registerMenuCommand
 // @homepageURL  https://github.com/xDp64xG/Torn-Intel
 // @supportURL   https://github.com/xDp64xG/Torn-Intel/issues
 // Ping Check
@@ -18,17 +21,60 @@
 (() => {
     'use strict';
 
-    const CONFIG = {
-        BASE_URL: 'http://127.0.0.1:8765',
-        HEALTH_URL: 'http://127.0.0.1:8765/health',
-        REQUEST_URL: 'http://127.0.0.1:8765/revive-request',
-        NOTIFICATIONS_URL: 'http://127.0.0.1:8765/revive-request/notifications',
-        NOTIFICATION_POLL_MS: 15000
-    };
+    const DEFAULT_BASE_URLS = [
+        'http://127.0.0.1:8765',
+        'http://localhost:8765'
+    ];
+    const DISCOVERY_URL = 'https://raw.githubusercontent.com/xDp64xG/Torn-Intel/main/scripts/tampermonkey/revive_request_endpoint.json';
+    const BASE_URL_KEY = 'tornintel_revive_listener_base_url_override';
+    const DISCOVERED_BASE_URL_KEY = 'tornintel_revive_listener_base_url_discovered';
+    const DISCOVERED_BASE_URL_AT_KEY = 'tornintel_revive_listener_base_url_discovered_at';
+    const DISCOVERY_CACHE_MS = 5 * 60 * 1000;
+    const NOTIFICATION_POLL_MS = 15000;
+
+    const trimSlash = url => String(url || '').replace(/\/+$/, '');
+    const isHttpUrl = url => /^https?:\/\/.+/i.test(String(url || ''));
+    const unique = values => [...new Set(values.filter(Boolean))];
 
     const state = {
+        activeBaseUrl: null,
+        discoveryPromise: null,
         notificationTimer: null
     };
+
+    const getOverrideBaseUrl = () => trimSlash(GM_getValue(BASE_URL_KEY, ''));
+    const setOverrideBaseUrl = url => GM_setValue(BASE_URL_KEY, trimSlash(url));
+
+    const endpoint = (baseUrl, path) => `${trimSlash(baseUrl)}${path}`;
+
+    const configureEndpoint = () => {
+        const current = getOverrideBaseUrl() || state.activeBaseUrl || '';
+        const input = window.prompt(
+            'Optional override URL (example: http://192.168.1.50:8765). Leave blank to use automatic discovery.',
+            current
+        );
+
+        if (input === null) return;
+
+        const candidate = trimSlash(input);
+        if (!candidate) {
+            setOverrideBaseUrl('');
+            state.activeBaseUrl = null;
+            alert('Cleared override URL. Automatic endpoint discovery is now enabled.');
+            return;
+        }
+
+        if (!isHttpUrl(candidate)) {
+            alert('Invalid URL. Example: http://192.168.1.50:8765');
+            return;
+        }
+
+        setOverrideBaseUrl(candidate);
+        state.activeBaseUrl = null;
+        alert(`Saved override revive listener URL: ${candidate}`);
+    };
+
+    GM_registerMenuCommand('TornIntel: Set/Clear Revive Listener Override URL', configureEndpoint);
 
     const $ = (s, p = document) => p.querySelector(s);
 
@@ -55,12 +101,69 @@
         });
     });
 
-    const checkListener = async () => {
-        const res = await gmRequest('GET', CONFIG.HEALTH_URL);
-        if (!res || !res.ok) {
-            throw new Error('Local revive listener health check failed');
+    const fetchDiscoveredBaseUrl = async () => {
+        const now = Date.now();
+        const cachedAt = Number(GM_getValue(DISCOVERED_BASE_URL_AT_KEY, 0));
+        const cachedUrl = trimSlash(GM_getValue(DISCOVERED_BASE_URL_KEY, ''));
+
+        if (cachedUrl && cachedAt > 0 && (now - cachedAt) < DISCOVERY_CACHE_MS) {
+            return cachedUrl;
         }
-        return res;
+
+        if (state.discoveryPromise) {
+            return state.discoveryPromise;
+        }
+
+        state.discoveryPromise = (async () => {
+            try {
+                const res = await gmRequest('GET', DISCOVERY_URL);
+                const candidate = trimSlash(res?.base_url || '');
+                if (!isHttpUrl(candidate)) {
+                    return '';
+                }
+                GM_setValue(DISCOVERED_BASE_URL_KEY, candidate);
+                GM_setValue(DISCOVERED_BASE_URL_AT_KEY, now);
+                return candidate;
+            } catch {
+                return cachedUrl || '';
+            } finally {
+                state.discoveryPromise = null;
+            }
+        })();
+
+        return state.discoveryPromise;
+    };
+
+    const resolveBaseUrl = async () => {
+        if (state.activeBaseUrl) return state.activeBaseUrl;
+
+        const override = getOverrideBaseUrl();
+        const discovered = await fetchDiscoveredBaseUrl();
+        const candidates = unique([override, discovered, ...DEFAULT_BASE_URLS].map(trimSlash));
+
+        for (const baseUrl of candidates) {
+            if (!isHttpUrl(baseUrl)) continue;
+            try {
+                const res = await gmRequest('GET', endpoint(baseUrl, '/health'));
+                if (res && res.ok) {
+                    state.activeBaseUrl = baseUrl;
+                    return baseUrl;
+                }
+            } catch (_err) {
+                // Try the next candidate.
+            }
+        }
+
+        throw new Error(`No reachable revive listener URL found. Tried: ${candidates.join(', ')}`);
+    };
+
+    const checkListener = async () => {
+        const baseUrl = await resolveBaseUrl();
+        const res = await gmRequest('GET', endpoint(baseUrl, '/health'));
+        if (!res || !res.ok) {
+            throw new Error(`Revive listener health check failed at ${baseUrl}`);
+        }
+        return { res, baseUrl };
     };
 
     const parseIdFromHref = href => href?.match(/XID=(\d+)/)?.[1] || null;
@@ -131,7 +234,11 @@
             try {
                 await checkListener();
             } catch (err) {
-                alert(`Local revive listener is offline. Start it with: python main.py revive_listener serve\n\n${err.message}`);
+                alert([
+                    'Revive listener is offline or unreachable.',
+                    'Start it with: python main.py revive_listener serve --host 0.0.0.0 --port 8765',
+                    err.message
+                ].join('\n\n'));
                 return;
             }
 
@@ -146,7 +253,8 @@
             };
 
             try {
-                const res = await gmRequest('POST', CONFIG.REQUEST_URL, payload);
+                const baseUrl = await resolveBaseUrl();
+                const res = await gmRequest('POST', endpoint(baseUrl, '/revive-request'), payload);
                 if (!res.ok) throw new Error(res.error || 'unknown_error');
                 const request = res.request || {};
                 const status = request.status || 'pending';
@@ -182,10 +290,11 @@
             if (!requester_id && !requester_name) return;
 
             try {
+                const baseUrl = await resolveBaseUrl();
                 const query = requester_id
                     ? `?requester_id=${encodeURIComponent(requester_id)}&limit=10`
                     : `?requester_name=${encodeURIComponent(requester_name)}&limit=10`;
-                const res = await gmRequest('GET', `${CONFIG.NOTIFICATIONS_URL}${query}`);
+                const res = await gmRequest('GET', `${endpoint(baseUrl, '/revive-request/notifications')}${query}`);
                 if (!res || !res.ok || !Array.isArray(res.notifications)) return;
 
                 for (const item of res.notifications) {
@@ -208,7 +317,7 @@
             }
         };
 
-        state.notificationTimer = window.setInterval(poll, CONFIG.NOTIFICATION_POLL_MS);
+        state.notificationTimer = window.setInterval(poll, NOTIFICATION_POLL_MS);
         poll();
     };
 

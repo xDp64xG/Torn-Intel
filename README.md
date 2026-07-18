@@ -715,6 +715,7 @@ If a target name begins with `-`, prefer `--target-id` or pass the name as `--ta
 ### Local Tampermonkey Flow
 
 You can run a local HTTP listener and have Tampermonkey post revive requests directly into your SQLite-backed workflow.
+The userscript now does automatic endpoint discovery so end users do not need to manually configure an IP/port.
 
 Listener endpoints:
 - `GET http://127.0.0.1:8765/health`
@@ -728,11 +729,35 @@ python main.py revive_listener serve --host 127.0.0.1 --port 8765
 python main.py revive_listener serve --poll-seconds 15
 ```
 
+Use from another computer (LAN):
+
+```bash
+# On the machine running TornIntel, bind all interfaces
+python main.py revive_listener serve --host 0.0.0.0 --port 8765
+```
+
+Automatic endpoint discovery behavior:
+- The script fetches `scripts/tampermonkey/revive_request_endpoint.json` from GitHub raw.
+- If `base_url` is reachable (`/health`), it uses that endpoint automatically.
+- If not reachable, it falls back to `http://127.0.0.1:8765` and `http://localhost:8765`.
+
+To publish one endpoint for everyone (no user setup):
+- Update `scripts/tampermonkey/revive_request_endpoint.json` with your listener URL, for example `http://192.168.1.50:8765` (LAN) or a DNS name.
+- Commit and push. Installed userscripts will auto-pick the new endpoint.
+
+Optional admin override (not needed for normal users):
+- Tampermonkey menu command: `TornIntel: Set/Clear Revive Listener Override URL`
+
+If it still fails from another machine, verify:
+- Both machines are on the same network/VPN and can ping each other.
+- Windows Firewall allows inbound TCP `8765` on the TornIntel machine.
+- You can open `http://<listener-ip>:8765/health` from the browser machine.
+
 The included Tampermonkey starter script is in [scripts/tampermonkey/revive_request_local.user.js](scripts/tampermonkey/revive_request_local.user.js).
 
 Behavior:
 - The script checks `/health` first.
-- If the local listener is offline, it shows a clear error telling you to start `python main.py revive_listener serve`.
+- If the listener is offline, it shows a clear error with the configured URL and a listener start command.
 - If the listener is online, it posts the revive request JSON into `revive_requests`.
 - The backend immediately attempts to match that request to an already-synced successful revive.
 - While the listener is running, it also polls on a timer when pending requests exist: it runs a live revive sync and re-checks pending requests automatically.
