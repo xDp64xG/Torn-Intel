@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TornIntel Local Revive Request
 // @namespace    http://tampermonkey.net/
-// @version      0.4.18
+// @version      0.4.19
 // @description  Send local revive requests into TornIntel over a local HTTP listener.
 // @author       TornIntel
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     const PDA_BAR_BUTTON_ID = 'tornintel-local-revive-pda-bar-btn';
     const DEBUG_BADGE_ID = 'tornintel-local-revive-debug';
     const ICON_POS_KEY = 'tornintel_local_revive_icon_position_v2';
-    const BUTTON_RECHECK_MS = 2000;
+    const BUTTON_RECHECK_MS = 5000;
     const ICON_DRAG_THRESHOLD = 8;
     const DEBUG_DIAGNOSTIC_DELAY_MS = 8000;
 
@@ -153,7 +153,7 @@
                 pointer-events: none;
             }
             .tornintel-revive-notice {
-                pointer-events: auto;
+                pointer-events: none;
                 border: 1px solid rgba(255, 255, 255, 0.16);
                 border-left-width: 4px;
                 border-radius: 8px;
@@ -658,14 +658,7 @@
             if (node) return node;
         }
 
-        const iconLike = Array.from(document.querySelectorAll('a,button,div,span')).find((node) => {
-            const title = String(node.getAttribute('title') || '').toLowerCase();
-            const aria = String(node.getAttribute('aria-label') || '').toLowerCase();
-            const text = String(node.textContent || '').toLowerCase().trim();
-            return title.includes('stats') || aria.includes('stats') || text === 'stats';
-        });
-
-        return iconLike || null;
+        return null;
     };
 
     const tryMountPdaBarButton = () => {
@@ -899,68 +892,12 @@
         icon.style.left = `${position.x}px`;
         icon.style.top = `${position.y}px`;
 
-        let startX = 0;
-        let startY = 0;
-        let originX = position.x;
-        let originY = position.y;
-        let dragMoved = false;
-        let pointerId = null;
-
-        const onPointerMove = (event) => {
-            if (pointerId === null || event.pointerId !== pointerId) return;
-            const dx = event.clientX - startX;
-            const dy = event.clientY - startY;
-            if (!dragMoved && Math.hypot(dx, dy) > ICON_DRAG_THRESHOLD) {
-                dragMoved = true;
-                state.iconDragging = true;
-            }
-            const next = clampIconPosition(originX + dx, originY + dy, icon.offsetWidth || 76, icon.offsetHeight || 44);
-            icon.style.left = `${next.x}px`;
-            icon.style.top = `${next.y}px`;
-        };
-
-        const onPointerUp = async (event) => {
-            if (pointerId === null || event.pointerId !== pointerId) return;
-            pointerId = null;
-            icon.releasePointerCapture(event.pointerId);
-            window.removeEventListener('pointermove', onPointerMove);
-            window.removeEventListener('pointerup', onPointerUp);
-            window.removeEventListener('pointercancel', onPointerUp);
-
-            const left = Number.parseFloat(icon.style.left || '0') || 0;
-            const top = Number.parseFloat(icon.style.top || '0') || 0;
-            saveIconPosition(left, top);
-
-            const shouldSubmit = !dragMoved;
-            window.setTimeout(() => {
-                state.iconDragging = false;
-            }, 20);
-
-            if (shouldSubmit) {
-                await submitReviveRequest(icon);
-            }
-        };
-
-        if (window.PointerEvent) {
-            icon.addEventListener('pointerdown', (event) => {
-                pointerId = event.pointerId;
-                dragMoved = false;
-                startX = event.clientX;
-                startY = event.clientY;
-                originX = Number.parseFloat(icon.style.left || '0') || 0;
-                originY = Number.parseFloat(icon.style.top || '0') || 0;
-                icon.setPointerCapture(event.pointerId);
-                window.addEventListener('pointermove', onPointerMove, { passive: true });
-                window.addEventListener('pointerup', onPointerUp);
-                window.addEventListener('pointercancel', onPointerUp);
-            });
-        } else {
-            icon.addEventListener('click', async (event) => {
-                event?.preventDefault?.();
-                event?.stopPropagation?.();
-                await submitReviveRequest(icon);
-            });
-        }
+        // Mobile safe mode: avoid pointer capture/drag logic that can interfere with PDA input handling.
+        icon.addEventListener('click', async (event) => {
+            event?.preventDefault?.();
+            event?.stopPropagation?.();
+            await submitReviveRequest(icon);
+        });
 
         window.addEventListener('resize', () => {
             const next = clampIconPosition(
@@ -971,7 +908,6 @@
             );
             icon.style.left = `${next.x}px`;
             icon.style.top = `${next.y}px`;
-            saveIconPosition(next.x, next.y);
         });
 
         state.lastError = null;
