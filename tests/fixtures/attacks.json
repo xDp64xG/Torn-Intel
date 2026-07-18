@@ -1,0 +1,139 @@
+{
+  "attacks": [
+    {
+      "id": 492936647,
+      "code": "5026107184863a5846d2eb6cd0b98ab1",
+      "started": 1783873936,
+      "ended": 1783873939,
+      "attacker": {
+        "id": 2272527,
+        "name": "oof-umair",
+        "level": 26,
+        "faction": {
+          "id": 8754,
+          "name": "no wars"
+        }
+      },
+      "defender": {
+        "id": 2794045,
+        "name": "Borsook",
+        "level": 24,
+        "faction": {
+          "id": 49431,
+          "name": "Glory to Saints"
+        }
+      },
+      "result": "Escape",
+      "respect_gain": 0,
+      "respect_loss": 0,
+      "chain": 0,
+      "is_interrupted": false,
+      "is_stealthed": false,
+      "is_raid": false,
+      "is_ranked_war": false,
+      "modifiers": {
+        "fair_fight": 1,
+        "war": 1,
+        "retaliation": 1,
+        "group": 1,
+        "overseas": 1,
+        "chain": 1,
+        "warlord": 1
+      },
+      "finishing_hit_effects": []
+    },
+    {
+      "id": 492932774,
+      "code": "c4175546f2c1412f404a99172345d594",
+      "started": 1783873203,
+      "ended": 1783873209,
+      "attacker": {
+        "id": 3408347,
+        "name": "JeffBezas",
+        "level": 83,
+        "faction": {
+          "id": 49431,
+          "name": "Glory to Saints"
+        }
+      },
+      "defender": {
+        "id": 4030451,
+        "name": "Bobcrown",
+        "level": 42,
+        "faction": {
+          "id": 37537,
+          "name": "Monarch Genesis"
+        }
+      },
+      "result": "Hospitalized",
+      "respect_gain": 2.01,
+      "respect_loss": 0.5,
+      "chain": 1,
+      "is_interrupted": false,
+      "is_stealthed": false,
+      "is_raid": false,
+      "is_ranked_war": false,
+      "modifiers": {
+        "fair_fight": 1.11,
+        "war": 1,
+        "retaliation": 1.5,
+        "group": 1,
+        "overseas": 1,
+        "chain": 1,
+        "warlord": 1
+      },
+      "finishing_hit_effects": []
+    },
+    {
+      "id": 492932556,
+      "code": "5b70014813cd200f8459029a79c7e184",
+      "started": 1783873162,
+      "ended": 1783873165,
+      "attacker": {
+        "id": 4030451,
+        "name": "Bobcrown",
+        "level": 42,
+        "faction": {
+          "id": 37537,
+          "name": "Monarch Genesis"
+        }
+      },
+      "defender": {
+        "id": 905417,
+        "name": "Ainzeh",
+        "level": 41,
+        "faction": {
+          "id": 49431,
+          "name": "Glory to Saints"
+        }
+      },
+      "result": "Attacked",
+      "respect_gain": 4.93,
+      "respect_loss": 1.23,
+      "chain": 13683,
+      "is_interrupted": false,
+      "is_stealthed": false,
+      "is_raid": false,
+      "is_ranked_war": false,
+      "modifiers": {
+        "fair_fight": 2.31,
+        "war": 1,
+        "retaliation": 1,
+        "group": 1,
+        "overseas": 1,
+        "chain": 1.78,
+        "warlord": 1
+      },
+      "finishing_hit_effects": [
+        {
+          "name": "revitalize",
+          "value": 25
+        },
+        {
+          "name": "proficience",
+          "value": 31
+        }
+      ]
+    }
+  ]
+}
