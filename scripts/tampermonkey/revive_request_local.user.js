@@ -1,10 +1,11 @@
 // ==UserScript==
 // @name         TornIntel Local Revive Request
 // @namespace    http://tampermonkey.net/
-// @version      0.4.11
+// @version      0.4.12
 // @description  Send local revive requests into TornIntel over a local HTTP listener.
 // @author       TornIntel
 // @match        https://www.torn.com/*
+// @match        https://torn.com/*
 // @connect      *
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
@@ -35,6 +36,7 @@
     const NOTICE_DURATION_MS = 25000;
     const BUTTON_ID = 'tornintel-local-revive-btn';
     const ICON_ID = 'tornintel-local-revive-icon';
+    const DEBUG_BADGE_ID = 'tornintel-local-revive-debug';
     const ICON_POS_KEY = 'tornintel_local_revive_icon_position';
     const BUTTON_RECHECK_MS = 2000;
     const ICON_DRAG_THRESHOLD = 8;
@@ -52,7 +54,9 @@
         lastCandidates: [],
         buttonObserverStarted: false,
         buttonRecheckTimer: null,
-        iconDragging: false
+        iconDragging: false,
+        lastError: null,
+        bootedAt: Date.now()
     };
 
     const getOverrideBaseUrl = () => trimSlash(GM_getValue(BASE_URL_KEY, ''));
@@ -135,6 +139,70 @@
                 notice.remove();
             }, 220);
         }, Math.max(20000, Number(durationMs) || NOTICE_DURATION_MS));
+    };
+
+    const formatError = (err) => {
+        if (!err) return 'unknown_error';
+        const name = err?.name ? String(err.name) : 'Error';
+        const msg = err?.message ? String(err.message) : String(err);
+        return `${name}: ${msg}`;
+    };
+
+    const collectDiagnostics = () => {
+        const lines = [
+            'TornIntel mobile diagnostics',
+            `URL: ${window.location.href}`,
+            `Body ready: ${Boolean(document.body)}`,
+            `Mobile mode: ${isMobileClient()}`,
+            `Button exists: ${Boolean(document.getElementById(BUTTON_ID))}`,
+            `Icon exists: ${Boolean(document.getElementById(ICON_ID))}`,
+            `Active endpoint: ${state.activeBaseUrl || '-'}`,
+            `Last error: ${state.lastError || '-'}`,
+            `Uptime(s): ${Math.floor((Date.now() - state.bootedAt) / 1000)}`
+        ];
+        return lines.join('\n');
+    };
+
+    const ensureDebugBadge = () => {
+        if (!isMobileClient() || !document.body) return;
+        let badge = document.getElementById(DEBUG_BADGE_ID);
+        if (!badge) {
+            badge = document.createElement('button');
+            badge.id = DEBUG_BADGE_ID;
+            badge.type = 'button';
+            badge.textContent = 'TI';
+            badge.title = 'TornIntel diagnostics';
+            badge.style.cssText = [
+                'position:fixed',
+                'top:calc(8px + env(safe-area-inset-top, 0px))',
+                'right:8px',
+                'z-index:2147483646',
+                'width:36px',
+                'height:24px',
+                'border:none',
+                'border-radius:999px',
+                'font-size:11px',
+                'font-weight:800',
+                'color:#fff',
+                'background:#2f7f46',
+                'box-shadow:0 6px 14px rgba(0,0,0,0.35)'
+            ].join(';');
+            badge.addEventListener('click', () => {
+                showNotice(collectDiagnostics(), state.lastError ? 'error' : 'info', 30000);
+            });
+            document.body.appendChild(badge);
+        }
+
+        badge.style.background = state.lastError ? '#a32424' : '#2f7f46';
+        badge.textContent = state.lastError ? 'ERR' : 'TI';
+    };
+
+    const reportScriptError = (context, err) => {
+        const reason = `[${context}] ${formatError(err)}`;
+        state.lastError = reason;
+        console.error('[TornIntel] script error', context, err);
+        ensureDebugBadge();
+        showNotice(`TornIntel mobile error\n${reason}`, 'error', 30000);
     };
 
     const configureEndpoint = () => {
@@ -556,6 +624,8 @@
         } catch (err) {
             const message = err?.message || String(err);
             console.error('[TornIntel] revive request action error', err);
+            state.lastError = `[submit] ${message}`;
+            ensureDebugBadge();
             showNotice(`Unexpected error in revive request script: ${message}`, 'error');
         } finally {
             if (trigger) {
@@ -582,7 +652,12 @@
         icon.title = 'Local Revive Request';
         icon.setAttribute('aria-label', 'Local Revive Request');
 
-        document.body.appendChild(icon);
+        try {
+            document.body.appendChild(icon);
+        } catch (err) {
+            reportScriptError('icon_append', err);
+            return;
+        }
 
         const rect = icon.getBoundingClientRect();
         const saved = readIconPosition();
@@ -666,6 +741,8 @@
             saveIconPosition(next.x, next.y);
         });
 
+        state.lastError = null;
+        ensureDebugBadge();
         console.info('[TornIntel] Draggable mobile revive icon mounted.');
     };
 
@@ -708,17 +785,27 @@
                 return;
             }
 
-            addButton();
+            try {
+                ensureDebugBadge();
+                addButton();
 
-            if (isMobileClient()) {
-                addDraggableMobileIcon();
+                if (isMobileClient()) {
+                    addDraggableMobileIcon();
+                }
+            } catch (err) {
+                reportScriptError('boot', err);
             }
 
             if (!state.buttonObserverStarted) {
                 new MutationObserver(() => {
-                    addButton();
-                    if (isMobileClient()) {
-                        addDraggableMobileIcon();
+                    try {
+                        ensureDebugBadge();
+                        addButton();
+                        if (isMobileClient()) {
+                            addDraggableMobileIcon();
+                        }
+                    } catch (err) {
+                        reportScriptError('observer', err);
                     }
                 }).observe(document.body, { childList: true, subtree: true });
                 state.buttonObserverStarted = true;
@@ -726,9 +813,14 @@
 
             if (!state.buttonRecheckTimer) {
                 state.buttonRecheckTimer = window.setInterval(() => {
-                    addButton();
-                    if (isMobileClient()) {
-                        addDraggableMobileIcon();
+                    try {
+                        ensureDebugBadge();
+                        addButton();
+                        if (isMobileClient()) {
+                            addDraggableMobileIcon();
+                        }
+                    } catch (err) {
+                        reportScriptError('interval', err);
                     }
                 }, BUTTON_RECHECK_MS);
             }
@@ -736,6 +828,14 @@
 
         boot();
     };
+
+    window.addEventListener('error', (event) => {
+        reportScriptError('window_error', event?.error || new Error(String(event?.message || 'window_error')));
+    });
+
+    window.addEventListener('unhandledrejection', (event) => {
+        reportScriptError('unhandled_rejection', event?.reason || new Error('unhandled_rejection'));
+    });
 
     const startNotificationPolling = () => {
         if (state.notificationTimer) return;
