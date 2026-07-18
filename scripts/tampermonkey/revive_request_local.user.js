@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TornIntel Local Revive Request
 // @namespace    http://tampermonkey.net/
-// @version      0.4.10
+// @version      0.4.11
 // @description  Send local revive requests into TornIntel over a local HTTP listener.
 // @author       TornIntel
 // @match        https://www.torn.com/*
@@ -34,7 +34,10 @@
     const NOTIFICATION_POLL_MS = 15000;
     const NOTICE_DURATION_MS = 25000;
     const BUTTON_ID = 'tornintel-local-revive-btn';
+    const ICON_ID = 'tornintel-local-revive-icon';
+    const ICON_POS_KEY = 'tornintel_local_revive_icon_position';
     const BUTTON_RECHECK_MS = 2000;
+    const ICON_DRAG_THRESHOLD = 8;
 
     const trimSlash = url => String(url || '').replace(/\/+$/, '');
     const isHttpUrl = url => /^https?:\/\/.+/i.test(String(url || ''));
@@ -48,7 +51,8 @@
         notificationTimer: null,
         lastCandidates: [],
         buttonObserverStarted: false,
-        buttonRecheckTimer: null
+        buttonRecheckTimer: null,
+        iconDragging: false
     };
 
     const getOverrideBaseUrl = () => trimSlash(GM_getValue(BASE_URL_KEY, ''));
@@ -406,9 +410,273 @@
         btn.style.cssText = 'margin:8px 0;padding:6px 12px;background:#b71c1c;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:bold;';
     };
 
+    const isMobileClient = () => {
+        try {
+            const ua = String(navigator.userAgent || '');
+            const touch = (navigator.maxTouchPoints || 0) > 0;
+            return touch || /Android|iPhone|iPad|iPod|Mobile|Torn\s*PDA/i.test(ua);
+        } catch {
+            return false;
+        }
+    };
+
+    const readIconPosition = () => {
+        try {
+            const raw = String(GM_getValue(ICON_POS_KEY, ''));
+            if (!raw) return null;
+            const parsed = JSON.parse(raw);
+            const x = Number(parsed?.x);
+            const y = Number(parsed?.y);
+            if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+            return { x, y };
+        } catch {
+            return null;
+        }
+    };
+
+    const saveIconPosition = (x, y) => {
+        GM_setValue(ICON_POS_KEY, JSON.stringify({ x: Math.round(x), y: Math.round(y) }));
+    };
+
+    const clampIconPosition = (x, y, width, height) => {
+        const maxX = Math.max(8, window.innerWidth - width - 8);
+        const maxY = Math.max(8, window.innerHeight - height - 8);
+        const safeX = Math.min(Math.max(8, x), maxX);
+        const safeY = Math.min(Math.max(8, y), maxY);
+        return { x: safeX, y: safeY };
+    };
+
+    const ensureIconStyles = () => {
+        if (document.getElementById('tornintel-revive-icon-style')) return;
+        GM_addStyle(`
+            #tornintel-revive-icon-style {}
+            .tornintel-revive-icon {
+                position: fixed;
+                z-index: 2147483646;
+                width: 52px;
+                height: 52px;
+                border: none;
+                border-radius: 50%;
+                background: linear-gradient(180deg, #d12424 0%, #8f1414 100%);
+                color: #ffffff;
+                box-shadow: 0 10px 24px rgba(0, 0, 0, 0.45);
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 22px;
+                font-weight: 800;
+                line-height: 1;
+                user-select: none;
+                -webkit-user-select: none;
+                touch-action: none;
+            }
+            .tornintel-revive-icon:active {
+                transform: scale(0.98);
+            }
+        `);
+        const styleTag = document.createElement('style');
+        styleTag.id = 'tornintel-revive-icon-style';
+        styleTag.textContent = '';
+        document.head.appendChild(styleTag);
+    };
+
+    const submitReviveRequest = async (trigger) => {
+        if (trigger?.dataset?.busy === '1') return;
+        if (trigger) {
+            trigger.dataset.busy = '1';
+            trigger.disabled = true;
+        }
+
+        const previousText = trigger?.textContent;
+        if (trigger && trigger.id === BUTTON_ID) {
+            trigger.textContent = 'Submitting...';
+        }
+
+        try {
+            const { requester_name, requester_id } = getCurrentUser();
+            const { target_id, target_name } = getProfileTarget();
+
+            if (!requester_id || !requester_name) {
+                showNotice('Could not determine your Torn user identity.', 'error');
+                return;
+            }
+
+            if (!target_id && !target_name) {
+                showNotice('Could not determine target identity.', 'error');
+                return;
+            }
+
+            if (!inHospital()) {
+                showNotice('Target is not currently shown as hospitalized.', 'error');
+                return;
+            }
+
+            try {
+                const health = await checkListener();
+                console.info('[TornIntel] Health check passed', { baseUrl: health.baseUrl });
+            } catch (err) {
+                showNotice([
+                    'Revive listener is offline or unreachable.',
+                    'Start it with: python main.py revive_listener serve --host 0.0.0.0 --port 8765',
+                    `Tried endpoints: ${state.lastCandidates.join(', ') || 'none'}`,
+                    err.message
+                ].join('\n\n'), 'error');
+                return;
+            }
+
+            const payload = {
+                requested_at: Math.floor(Date.now() / 1000),
+                requester_name,
+                requester_id,
+                target_id,
+                target_name,
+                source: 'tampermonkey-local',
+                notes: `Requested from ${window.location.href}`,
+            };
+
+            try {
+                const baseUrl = await resolveBaseUrl();
+                const res = await gmRequest('POST', endpoint(baseUrl, '/revive-request'), payload);
+                if (!res.ok) throw new Error(res.error || 'unknown_error');
+                const request = res.request || {};
+                const status = request.status || 'pending';
+                showNotice([
+                    `Revive request sent as ${status}.`,
+                    `Endpoint: ${baseUrl}`,
+                    'Listener will post lifecycle updates automatically.'
+                ].filter(Boolean).join('\n\n'), status === 'fulfilled' ? 'success' : 'info');
+            } catch (err) {
+                showNotice([
+                    'Failed to save local revive request.',
+                    `Active endpoint: ${state.activeBaseUrl || 'none'}`,
+                    `Tried endpoints: ${state.lastCandidates.join(', ') || 'none'}`,
+                    err.message
+                ].join('\n\n'), 'error');
+            }
+        } catch (err) {
+            const message = err?.message || String(err);
+            console.error('[TornIntel] revive request action error', err);
+            showNotice(`Unexpected error in revive request script: ${message}`, 'error');
+        } finally {
+            if (trigger) {
+                trigger.dataset.busy = '0';
+                trigger.disabled = false;
+                if (trigger.id === BUTTON_ID && previousText) {
+                    trigger.textContent = previousText;
+                }
+            }
+        }
+    };
+
+    const addDraggableMobileIcon = () => {
+        if (!isMobileClient()) return;
+        if (document.getElementById(ICON_ID)) return;
+        if (!document.body) return;
+
+        ensureIconStyles();
+        const icon = document.createElement('button');
+        icon.id = ICON_ID;
+        icon.type = 'button';
+        icon.className = 'tornintel-revive-icon';
+        icon.textContent = '+';
+        icon.title = 'Local Revive Request';
+        icon.setAttribute('aria-label', 'Local Revive Request');
+
+        document.body.appendChild(icon);
+
+        const rect = icon.getBoundingClientRect();
+        const saved = readIconPosition();
+        const fallback = {
+            x: Math.max(8, window.innerWidth - rect.width - 12),
+            y: Math.max(8, window.innerHeight - rect.height - 20)
+        };
+        const position = clampIconPosition(
+            saved?.x ?? fallback.x,
+            saved?.y ?? fallback.y,
+            rect.width,
+            rect.height
+        );
+        icon.style.left = `${position.x}px`;
+        icon.style.top = `${position.y}px`;
+
+        let startX = 0;
+        let startY = 0;
+        let originX = position.x;
+        let originY = position.y;
+        let dragMoved = false;
+        let pointerId = null;
+
+        const onPointerMove = (event) => {
+            if (pointerId === null || event.pointerId !== pointerId) return;
+            const dx = event.clientX - startX;
+            const dy = event.clientY - startY;
+            if (!dragMoved && Math.hypot(dx, dy) > ICON_DRAG_THRESHOLD) {
+                dragMoved = true;
+                state.iconDragging = true;
+            }
+            const next = clampIconPosition(originX + dx, originY + dy, icon.offsetWidth || 52, icon.offsetHeight || 52);
+            icon.style.left = `${next.x}px`;
+            icon.style.top = `${next.y}px`;
+        };
+
+        const onPointerUp = async (event) => {
+            if (pointerId === null || event.pointerId !== pointerId) return;
+            pointerId = null;
+            icon.releasePointerCapture(event.pointerId);
+            window.removeEventListener('pointermove', onPointerMove);
+            window.removeEventListener('pointerup', onPointerUp);
+            window.removeEventListener('pointercancel', onPointerUp);
+
+            const left = Number.parseFloat(icon.style.left || '0') || 0;
+            const top = Number.parseFloat(icon.style.top || '0') || 0;
+            saveIconPosition(left, top);
+
+            const shouldSubmit = !dragMoved;
+            window.setTimeout(() => {
+                state.iconDragging = false;
+            }, 20);
+
+            if (shouldSubmit) {
+                await submitReviveRequest(icon);
+            }
+        };
+
+        icon.addEventListener('pointerdown', (event) => {
+            pointerId = event.pointerId;
+            dragMoved = false;
+            startX = event.clientX;
+            startY = event.clientY;
+            originX = Number.parseFloat(icon.style.left || '0') || 0;
+            originY = Number.parseFloat(icon.style.top || '0') || 0;
+            icon.setPointerCapture(event.pointerId);
+            window.addEventListener('pointermove', onPointerMove, { passive: true });
+            window.addEventListener('pointerup', onPointerUp);
+            window.addEventListener('pointercancel', onPointerUp);
+        });
+
+        window.addEventListener('resize', () => {
+            const next = clampIconPosition(
+                Number.parseFloat(icon.style.left || '0') || 0,
+                Number.parseFloat(icon.style.top || '0') || 0,
+                icon.offsetWidth || 52,
+                icon.offsetHeight || 52
+            );
+            icon.style.left = `${next.x}px`;
+            icon.style.top = `${next.y}px`;
+            saveIconPosition(next.x, next.y);
+        });
+
+        console.info('[TornIntel] Draggable mobile revive icon mounted.');
+    };
+
     const addButton = () => {
         if ($(`#${BUTTON_ID}`)) return;
         if (!document.body) return;
+
+        if (isMobileClient()) {
+            addDraggableMobileIcon();
+            return;
+        }
 
         const container = findButtonContainer();
         const mode = container ? 'inline' : 'floating';
@@ -422,83 +690,7 @@
         btn.onclick = async (event) => {
             event?.preventDefault?.();
             event?.stopPropagation?.();
-
-            if (btn.dataset.busy === '1') return;
-            btn.dataset.busy = '1';
-            const previousText = btn.textContent;
-            btn.textContent = 'Submitting...';
-            btn.disabled = true;
-
-            try {
-                const { requester_name, requester_id } = getCurrentUser();
-                const { target_id, target_name } = getProfileTarget();
-
-                if (!requester_id || !requester_name) {
-                    showNotice('Could not determine your Torn user identity.', 'error');
-                    return;
-                }
-
-                if (!target_id && !target_name) {
-                    showNotice('Could not determine target identity.', 'error');
-                    return;
-                }
-
-                if (!inHospital()) {
-                    showNotice('Target is not currently shown as hospitalized.', 'error');
-                    return;
-                }
-
-                try {
-                    const health = await checkListener();
-                    console.info('[TornIntel] Health check passed', { baseUrl: health.baseUrl });
-                } catch (err) {
-                    showNotice([
-                        'Revive listener is offline or unreachable.',
-                        'Start it with: python main.py revive_listener serve --host 0.0.0.0 --port 8765',
-                        `Tried endpoints: ${state.lastCandidates.join(', ') || 'none'}`,
-                        err.message
-                    ].join('\n\n'), 'error');
-                    return;
-                }
-
-                const payload = {
-                    requested_at: Math.floor(Date.now() / 1000),
-                    requester_name,
-                    requester_id,
-                    target_id,
-                    target_name,
-                    source: 'tampermonkey-local',
-                    notes: `Requested from ${window.location.href}`,
-                };
-
-                try {
-                    const baseUrl = await resolveBaseUrl();
-                    const res = await gmRequest('POST', endpoint(baseUrl, '/revive-request'), payload);
-                    if (!res.ok) throw new Error(res.error || 'unknown_error');
-                    const request = res.request || {};
-                    const status = request.status || 'pending';
-                    showNotice([
-                        `Revive request sent as ${status}.`,
-                        `Endpoint: ${baseUrl}`,
-                        'Listener will post lifecycle updates automatically.'
-                    ].filter(Boolean).join('\n\n'), status === 'fulfilled' ? 'success' : 'info');
-                } catch (err) {
-                    showNotice([
-                        'Failed to save local revive request.',
-                        `Active endpoint: ${state.activeBaseUrl || 'none'}`,
-                        `Tried endpoints: ${state.lastCandidates.join(', ') || 'none'}`,
-                        err.message
-                    ].join('\n\n'), 'error');
-                }
-            } catch (err) {
-                const message = err?.message || String(err);
-                console.error('[TornIntel] revive request button error', err);
-                showNotice(`Unexpected error in revive request script: ${message}`, 'error');
-            } finally {
-                btn.dataset.busy = '0';
-                btn.textContent = previousText;
-                btn.disabled = false;
-            }
+            await submitReviveRequest(btn);
         };
 
         if (container) {
@@ -518,13 +710,27 @@
 
             addButton();
 
+            if (isMobileClient()) {
+                addDraggableMobileIcon();
+            }
+
             if (!state.buttonObserverStarted) {
-                new MutationObserver(() => addButton()).observe(document.body, { childList: true, subtree: true });
+                new MutationObserver(() => {
+                    addButton();
+                    if (isMobileClient()) {
+                        addDraggableMobileIcon();
+                    }
+                }).observe(document.body, { childList: true, subtree: true });
                 state.buttonObserverStarted = true;
             }
 
             if (!state.buttonRecheckTimer) {
-                state.buttonRecheckTimer = window.setInterval(() => addButton(), BUTTON_RECHECK_MS);
+                state.buttonRecheckTimer = window.setInterval(() => {
+                    addButton();
+                    if (isMobileClient()) {
+                        addDraggableMobileIcon();
+                    }
+                }, BUTTON_RECHECK_MS);
             }
         };
 
