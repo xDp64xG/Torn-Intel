@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TornIntel Local Revive Request
 // @namespace    http://tampermonkey.net/
-// @version      0.4.15
+// @version      0.4.16
 // @description  Send local revive requests into TornIntel over a local HTTP listener.
 // @author       TornIntel
 // @match        https://www.torn.com/*
@@ -206,10 +206,13 @@
         const lines = [
             'TornIntel mobile diagnostics',
             `URL: ${window.location.href}`,
+            `UA: ${navigator.userAgent}`,
+            `Viewport: ${window.innerWidth}x${window.innerHeight}`,
             `Body ready: ${Boolean(document.body)}`,
             `Mobile mode: ${isMobileClient()}`,
             `Button exists: ${Boolean(document.getElementById(BUTTON_ID))}`,
             `Icon exists: ${Boolean(document.getElementById(ICON_ID))}`,
+            `PDA bar button exists: ${Boolean(document.getElementById(PDA_BAR_BUTTON_ID))}`,
             `Active endpoint: ${state.activeBaseUrl || '-'}`,
             `Last error: ${state.lastError || '-'}`,
             `Uptime(s): ${Math.floor((Date.now() - state.bootedAt) / 1000)}`
@@ -525,6 +528,16 @@
     };
 
     const findButtonContainer = () => {
+        const isVisibleElement = (node) => {
+            if (!node) return false;
+            const style = window.getComputedStyle(node);
+            if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity || '1') === 0) {
+                return false;
+            }
+            const rect = node.getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0;
+        };
+
         const selectors = [
             '.buttons-wrap .buttons-list',
             '.header-buttons-wrapper',
@@ -535,7 +548,7 @@
 
         for (const selector of selectors) {
             const node = $(selector);
-            if (node) return node;
+            if (isVisibleElement(node)) return node;
         }
 
         return null;
@@ -812,8 +825,8 @@
         }
     };
 
-    const addDraggableMobileIcon = () => {
-        if (!isMobileClient()) return;
+    const addDraggableMobileIcon = (force = false) => {
+        if (!force && !isMobileClient()) return;
         if (document.getElementById(ICON_ID)) return;
         if (!document.body) return;
 
@@ -890,18 +903,26 @@
             }
         };
 
-        icon.addEventListener('pointerdown', (event) => {
-            pointerId = event.pointerId;
-            dragMoved = false;
-            startX = event.clientX;
-            startY = event.clientY;
-            originX = Number.parseFloat(icon.style.left || '0') || 0;
-            originY = Number.parseFloat(icon.style.top || '0') || 0;
-            icon.setPointerCapture(event.pointerId);
-            window.addEventListener('pointermove', onPointerMove, { passive: true });
-            window.addEventListener('pointerup', onPointerUp);
-            window.addEventListener('pointercancel', onPointerUp);
-        });
+        if (window.PointerEvent) {
+            icon.addEventListener('pointerdown', (event) => {
+                pointerId = event.pointerId;
+                dragMoved = false;
+                startX = event.clientX;
+                startY = event.clientY;
+                originX = Number.parseFloat(icon.style.left || '0') || 0;
+                originY = Number.parseFloat(icon.style.top || '0') || 0;
+                icon.setPointerCapture(event.pointerId);
+                window.addEventListener('pointermove', onPointerMove, { passive: true });
+                window.addEventListener('pointerup', onPointerUp);
+                window.addEventListener('pointercancel', onPointerUp);
+            });
+        } else {
+            icon.addEventListener('click', async (event) => {
+                event?.preventDefault?.();
+                event?.stopPropagation?.();
+                await submitReviveRequest(icon);
+            });
+        }
 
         window.addEventListener('resize', () => {
             const next = clampIconPosition(
@@ -969,6 +990,11 @@
                     tryMountPdaBarButton();
                     addDraggableMobileIcon();
                 }
+
+                // If no visible control exists after normal mounting, force the draggable fallback.
+                if (!document.getElementById(BUTTON_ID) && !document.getElementById(PDA_BAR_BUTTON_ID) && !document.getElementById(ICON_ID)) {
+                    addDraggableMobileIcon(true);
+                }
             } catch (err) {
                 reportScriptError('boot', err);
             }
@@ -981,6 +1007,9 @@
                         if (isMobileClient()) {
                             tryMountPdaBarButton();
                             addDraggableMobileIcon();
+                        }
+                        if (!document.getElementById(BUTTON_ID) && !document.getElementById(PDA_BAR_BUTTON_ID) && !document.getElementById(ICON_ID)) {
+                            addDraggableMobileIcon(true);
                         }
                     } catch (err) {
                         reportScriptError('observer', err);
@@ -997,6 +1026,9 @@
                         if (isMobileClient()) {
                             tryMountPdaBarButton();
                             addDraggableMobileIcon();
+                        }
+                        if (!document.getElementById(BUTTON_ID) && !document.getElementById(PDA_BAR_BUTTON_ID) && !document.getElementById(ICON_ID)) {
+                            addDraggableMobileIcon(true);
                         }
                     } catch (err) {
                         reportScriptError('interval', err);
