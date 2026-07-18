@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TornIntel Local Revive Request
 // @namespace    http://tampermonkey.net/
-// @version      0.4.14
+// @version      0.4.15
 // @description  Send local revive requests into TornIntel over a local HTTP listener.
 // @author       TornIntel
 // @match        https://www.torn.com/*
@@ -36,6 +36,7 @@
     const NOTICE_DURATION_MS = 25000;
     const BUTTON_ID = 'tornintel-local-revive-btn';
     const ICON_ID = 'tornintel-local-revive-icon';
+    const PDA_BAR_BUTTON_ID = 'tornintel-local-revive-pda-bar-btn';
     const DEBUG_BADGE_ID = 'tornintel-local-revive-debug';
     const ICON_POS_KEY = 'tornintel_local_revive_icon_position_v2';
     const BUTTON_RECHECK_MS = 2000;
@@ -574,6 +575,91 @@
         }
     };
 
+    const ensurePdaBarButtonStyle = () => {
+        if (document.getElementById('tornintel-revive-pda-bar-btn-style')) return;
+        gmAddStyleSafe(`
+            #tornintel-revive-pda-bar-btn-style {}
+            .tornintel-revive-pda-bar-btn {
+                border: none;
+                border-radius: 10px;
+                background: linear-gradient(180deg, #d12424 0%, #8f1414 100%);
+                color: #ffffff;
+                font-size: 11px;
+                font-weight: 800;
+                line-height: 1;
+                padding: 8px 10px;
+                margin-left: 6px;
+                min-height: 30px;
+                box-shadow: 0 6px 14px rgba(0, 0, 0, 0.35);
+                white-space: nowrap;
+            }
+        `);
+        const styleTag = document.createElement('style');
+        styleTag.id = 'tornintel-revive-pda-bar-btn-style';
+        styleTag.textContent = '';
+        (document.head || document.documentElement || document.body).appendChild(styleTag);
+    };
+
+    const findPdaStatsAnchor = () => {
+        const selectorCandidates = [
+            '[title*="stats" i]',
+            '[aria-label*="stats" i]',
+            '[data-tab*="stats" i]',
+            'a[href*="stats" i]'
+        ];
+
+        for (const selector of selectorCandidates) {
+            const node = document.querySelector(selector);
+            if (node) return node;
+        }
+
+        const iconLike = Array.from(document.querySelectorAll('a,button,div,span')).find((node) => {
+            const title = String(node.getAttribute('title') || '').toLowerCase();
+            const aria = String(node.getAttribute('aria-label') || '').toLowerCase();
+            const text = String(node.textContent || '').toLowerCase().trim();
+            return title.includes('stats') || aria.includes('stats') || text === 'stats';
+        });
+
+        return iconLike || null;
+    };
+
+    const tryMountPdaBarButton = () => {
+        if (!isMobileClient()) return false;
+        if (!document.body) return false;
+        if (document.getElementById(PDA_BAR_BUTTON_ID)) return true;
+
+        const statsAnchor = findPdaStatsAnchor();
+        if (!statsAnchor) return false;
+
+        const parent = statsAnchor.parentElement;
+        if (!parent) return false;
+
+        ensurePdaBarButtonStyle();
+        const btn = document.createElement('button');
+        btn.id = PDA_BAR_BUTTON_ID;
+        btn.type = 'button';
+        btn.className = 'tornintel-revive-pda-bar-btn';
+        btn.textContent = 'Revive';
+        btn.title = 'Local Revive Request';
+        btn.setAttribute('aria-label', 'Local Revive Request');
+        btn.addEventListener('click', async (event) => {
+            event?.preventDefault?.();
+            event?.stopPropagation?.();
+            await submitReviveRequest(btn);
+        });
+
+        if (statsAnchor.nextSibling) {
+            parent.insertBefore(btn, statsAnchor.nextSibling);
+        } else {
+            parent.appendChild(btn);
+        }
+
+        state.lastError = null;
+        ensureDebugBadge();
+        console.info('[TornIntel] PDA bar Revive button mounted near stats anchor.');
+        return true;
+    };
+
     const readIconPosition = () => {
         try {
             const raw = String(gmGetValue(ICON_POS_KEY, ''));
@@ -839,6 +925,8 @@
         if (!document.body) return;
 
         if (isMobileClient()) {
+            const mountedInBar = tryMountPdaBarButton();
+            if (mountedInBar) return;
             addDraggableMobileIcon();
             return;
         }
@@ -878,6 +966,7 @@
                 addButton();
 
                 if (isMobileClient()) {
+                    tryMountPdaBarButton();
                     addDraggableMobileIcon();
                 }
             } catch (err) {
@@ -890,6 +979,7 @@
                         ensureDebugBadge();
                         addButton();
                         if (isMobileClient()) {
+                            tryMountPdaBarButton();
                             addDraggableMobileIcon();
                         }
                     } catch (err) {
@@ -905,6 +995,7 @@
                         ensureDebugBadge();
                         addButton();
                         if (isMobileClient()) {
+                            tryMountPdaBarButton();
                             addDraggableMobileIcon();
                         }
                     } catch (err) {
