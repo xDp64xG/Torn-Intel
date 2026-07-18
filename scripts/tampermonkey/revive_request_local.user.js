@@ -11,8 +11,8 @@
 // @homepageURL  https://github.com/xDp64xG/Torn-Intel
 // @supportURL   https://github.com/xDp64xG/Torn-Intel/issues
 // Ping Check
-// @updateURL    https://github.com/xDp64xG/Torn-Intel/blob/main/scripts/tampermonkey/revive_request_local.user.js
-// @downloadURL  https://github.com/xDp64xG/Torn-Intel/blob/main/scripts/tampermonkey/revive_request_local.user.js
+// @updateURL    https://raw.githubusercontent.com/xDp64xG/Torn-Intel/main/scripts/tampermonkey/revive_request_local.user.js
+// @downloadURL  https://raw.githubusercontent.com/xDp64xG/Torn-Intel/main/scripts/tampermonkey/revive_request_local.user.js
 // ==/UserScript==
 
 (() => {
