@@ -8,6 +8,11 @@
 // @connect      127.0.0.1
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
+// @homepageURL  https://github.com/xDp64xG/Torn-Intel
+// @supportURL   https://github.com/xDp64xG/Torn-Intel/issues
+// Ping Check
+// @updateURL    https://github.com/xDp64xG/Torn-Intel/blob/main/scripts/tampermonkey/revive_request_local.user.js
+// @downloadURL  https://github.com/xDp64xG/Torn-Intel/blob/main/scripts/tampermonkey/revive_request_local.user.js
 // ==/UserScript==
 
 (() => {
