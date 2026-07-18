@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OC Item Audit
 // @namespace    GTS
-// @version      1.4
+// @version      1.5
 // @match        https://www.torn.com/factions.php*
 // @grant        GM_registerMenuCommand
 // @grant        GM_getValue
