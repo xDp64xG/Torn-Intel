@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TornIntel Local Revive Request
 // @namespace    http://tampermonkey.net/
-// @version      0.4.9
+// @version      0.4.10
 // @description  Send local revive requests into TornIntel over a local HTTP listener.
 // @author       TornIntel
 // @match        https://www.torn.com/*
@@ -34,6 +34,7 @@
     const NOTIFICATION_POLL_MS = 15000;
     const NOTICE_DURATION_MS = 25000;
     const BUTTON_ID = 'tornintel-local-revive-btn';
+    const BUTTON_RECHECK_MS = 2000;
 
     const trimSlash = url => String(url || '').replace(/\/+$/, '');
     const isHttpUrl = url => /^https?:\/\/.+/i.test(String(url || ''));
@@ -45,7 +46,9 @@
         activeBaseUrl: null,
         discoveryPromise: null,
         notificationTimer: null,
-        lastCandidates: []
+        lastCandidates: [],
+        buttonObserverStarted: false,
+        buttonRecheckTimer: null
     };
 
     const getOverrideBaseUrl = () => trimSlash(GM_getValue(BASE_URL_KEY, ''));
@@ -384,8 +387,8 @@
         if (mode === 'floating') {
             btn.style.cssText = [
                 'position:fixed',
-                'left:12px',
-                'bottom:16px',
+                'right:12px',
+                'bottom:calc(16px + env(safe-area-inset-bottom, 0px))',
                 'z-index:2147483646',
                 'padding:10px 12px',
                 'background:#b71c1c',
@@ -506,6 +509,28 @@
         }
     };
 
+    const startButtonMounting = () => {
+        const boot = () => {
+            if (!document.body) {
+                window.setTimeout(boot, 250);
+                return;
+            }
+
+            addButton();
+
+            if (!state.buttonObserverStarted) {
+                new MutationObserver(() => addButton()).observe(document.body, { childList: true, subtree: true });
+                state.buttonObserverStarted = true;
+            }
+
+            if (!state.buttonRecheckTimer) {
+                state.buttonRecheckTimer = window.setInterval(() => addButton(), BUTTON_RECHECK_MS);
+            }
+        };
+
+        boot();
+    };
+
     const startNotificationPolling = () => {
         if (state.notificationTimer) return;
 
@@ -550,7 +575,6 @@
         schedulePoll(0);
     };
 
-    addButton();
-    new MutationObserver(() => addButton()).observe(document.body, { childList: true, subtree: true });
+    startButtonMounting();
     startNotificationPolling();
 })();
