@@ -36,13 +36,23 @@ class ReviveRequestListener:
         repo = self.repo
         syncer = ReviveSync(self.services)
 
+        def row_value(row, field, default=None):
+            if row is None:
+                return default
+            try:
+                if isinstance(row, dict):
+                    return row.get(field, default)
+                return row[field]
+            except Exception:
+                return getattr(row, field, default)
+
         def log_fulfilled_request(request, source):
-            target = highlight(request.get("target_name") or f"Target {request.get('target_id') or '?'}")
-            reviver = success(request.get("fulfilled_by_name") or str(request.get("fulfilled_by_id") or "unknown reviver"))
-            revived_at = int(request.get("revived_timestamp") or request.get("fulfilled_at") or 0)
+            target = highlight(row_value(request, "target_name") or f"Target {row_value(request, 'target_id') or '?'}")
+            reviver = success(row_value(request, "fulfilled_by_name") or str(row_value(request, "fulfilled_by_id") or "unknown reviver"))
+            revived_at = int(row_value(request, "revived_timestamp") or row_value(request, "fulfilled_at") or 0)
             revived_text = time.strftime("%m-%d %H:%M:%S", time.localtime(revived_at)) if revived_at else "unknown time"
-            request_id = muted(str(request.get("request_id") or "?"))
-            requester = highlight(request.get("requester_name") or f"Requester {request.get('requester_id') or '?'}")
+            request_id = muted(str(row_value(request, "request_id") or "?"))
+            requester = highlight(row_value(request, "requester_name") or f"Requester {row_value(request, 'requester_id') or '?'}")
             payout_template = (
                 f"Payout template: {requester}, your revive request for {target} was fulfilled by {reviver} "
                 f"at {revived_text}. Please send the agreed payout."
@@ -51,6 +61,31 @@ class ReviveRequestListener:
                 f"{info('Revive request fulfilled')} [{source}] {target} by {reviver} at {success(revived_text)} ({request_id})"
             )
             logger.info(payout_template)
+
+        def emit_notification(event_type, request, extra=None):
+            payload = dict(request)
+            if extra:
+                payload.update(extra)
+            notification = repo.queue_notification(event_type, request, payload=payload)
+            if notification:
+                logger.info(
+                    f"Queued revive notification {event_type} for request={row_value(notification, 'request_id')}"
+                )
+            return notification
+
+        def legacy_notifications(requester_id=None, requester_name=None, limit=10):
+            rows = repo.get_unnotified_fulfilled(
+                requester_id=requester_id,
+                requester_name=requester_name,
+                limit=limit,
+            )
+            payload = []
+            for row in rows:
+                row_dict = dict(row)
+                row_dict["event_type"] = row_dict.get("event_type") or "revive_request_fulfilled"
+                payload.append(row_dict)
+            repo.mark_notified([row["request_id"] for row in rows])
+            return payload
 
         class Handler(BaseHTTPRequestHandler):
 
@@ -90,13 +125,20 @@ class ReviveRequestListener:
                         query = parse_qs(parsed.query)
                         requester_id = query.get("requester_id", [None])[0]
                         requester_name = query.get("requester_name", [None])[0]
-                        rows = repo.get_unnotified_fulfilled(
+                        rows = repo.get_notifications(
                             requester_id=int(requester_id) if requester_id not in (None, "") else None,
                             requester_name=requester_name,
                             limit=int(query.get("limit", [10])[0] or 10),
                         )
-                        payload = [dict(row) for row in rows]
-                        repo.mark_notified([row["request_id"] for row in rows])
+                        if rows:
+                            payload = [dict(row) for row in rows]
+                            repo.mark_notifications_notified([row["notification_id"] for row in rows])
+                        else:
+                            payload = legacy_notifications(
+                                requester_id=int(requester_id) if requester_id not in (None, "") else None,
+                                requester_name=requester_name,
+                                limit=int(query.get("limit", [10])[0] or 10),
+                            )
                         self._send_json(200, {"ok": True, "notifications": payload})
                         return
 
@@ -123,6 +165,9 @@ class ReviveRequestListener:
                 try:
                     request_row = self._normalize_request_payload(payload)
                     request_id = repo.create_request(request_row)
+                    saved_request = repo.get(request_id)
+                    if saved_request:
+                        emit_notification("revive_request_received", saved_request, extra={"source_event": "post"})
                     fulfilled_rows = repo.reconcile_against_database(
                         window_seconds=int(payload.get("window_seconds") or window_seconds),
                         limit=1,
@@ -130,6 +175,7 @@ class ReviveRequestListener:
                     )
 
                     for fulfilled in fulfilled_rows:
+                        emit_notification("revive_request_fulfilled", fulfilled, extra={"source_event": "reconcile"})
                         log_fulfilled_request(fulfilled, "request")
 
                     rows = repo.db.select(
@@ -214,6 +260,7 @@ class ReviveRequestListener:
                 )
 
                 for fulfilled in matched_rows:
+                    emit_notification("revive_request_fulfilled", fulfilled, extra={"source_event": "poll"})
                     log_fulfilled_request(fulfilled, "poll")
 
                 logger.info(

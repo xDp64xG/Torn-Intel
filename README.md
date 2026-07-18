@@ -708,7 +708,23 @@ python main.py revive_requests list --status all --limit 25
 
 # Re-run matching against already-synced revive history
 python main.py revive_requests reconcile --status all --limit 25
+
+# Remove revive requests from the database for testing/cleanup
+# Default delete scope is pending only
+python main.py revive_requests delete
+
+# Remove only matching pending requests for one target
+python main.py revive_requests delete --target-id 430598
+
+# Remove all revive requests, including fulfilled ones, only when you intentionally want a full cleanup
+python main.py revive_requests delete --status all
 ```
+
+Delete behavior:
+- `delete` removes rows from `revive_requests` directly.
+- Without extra filters, it only deletes rows with `status=pending`.
+- Add `--target-id`, `--target-name`, `--request-id`, `--requester-id`, or `--requester` to narrow the cleanup.
+- Use `--status all` only when you want to purge both pending and fulfilled test rows.
 
 If a target name begins with `-`, prefer `--target-id` or pass the name as `--target-name=-Plutonium-` so argparse does not read it as another flag.
 
@@ -735,6 +751,16 @@ Use from another computer (LAN):
 # On the machine running TornIntel, bind all interfaces
 python main.py revive_listener serve --host 0.0.0.0 --port 8765
 ```
+
+To keep this reachable from every computer, give the TornIntel machine a stable LAN IP:
+- Best option: create a DHCP reservation in your router for the machine's MAC address.
+- Alternative: set a manual static IPv4 address on the machine that stays inside your LAN subnet.
+- Keep `scripts/tampermonkey/revive_request_endpoint.json` pointed at that stable IP, for example `http://10.0.0.52:8765`.
+
+Windows quick check for the listener machine:
+- Run `ipconfig` and confirm the IPv4 address is the same one used in `revive_request_endpoint.json`.
+- Make sure the machine is not switching between Wi-Fi and Ethernet with different IPs.
+- If the IP changes later, update the endpoint file and repush it.
 
 Automatic endpoint discovery behavior:
 - The script fetches `scripts/tampermonkey/revive_request_endpoint.json` from GitHub raw.

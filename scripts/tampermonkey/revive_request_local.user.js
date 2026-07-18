@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TornIntel Local Revive Request
 // @namespace    http://tampermonkey.net/
-// @version      0.4.3
+// @version      0.4.4
 // @description  Send local revive requests into TornIntel over a local HTTP listener.
 // @author       TornIntel
 // @match        https://www.torn.com/*
@@ -223,6 +223,36 @@
         ].join('\n');
     };
 
+    const showNotificationAlert = item => {
+        const eventType = String(item.event_type || 'revive_request_fulfilled').toLowerCase();
+        const target = item.target_name || `Target ${item.target_id || '?'}`;
+        const requester = item.requester_name || 'requester';
+
+        if (eventType === 'revive_request_received' || eventType === 'request_received') {
+            alert([
+                `New revive request received for ${target}`,
+                `Requester: ${requester}`,
+                item.notes ? `Notes: ${item.notes}` : null,
+                item.source ? `Source: ${item.source}` : null,
+                item.requested_timestamp ? `Requested at: ${new Date(item.requested_timestamp * 1000).toLocaleString()}` : null
+            ].filter(Boolean).join('\n\n'));
+            return;
+        }
+
+        const reviver = item.fulfilled_by_name || item.fulfilled_by_id || 'unknown reviver';
+        const revivedAt = item.revived_timestamp
+            ? new Date(item.revived_timestamp * 1000).toLocaleString()
+            : 'unknown time';
+        const payoutTemplate = buildPayoutTemplate(requester, target, reviver, revivedAt);
+
+        alert([
+            `Revive fulfilled for ${target}`,
+            `Reviver: ${reviver}`,
+            `Revived at: ${revivedAt}`,
+            payoutTemplate
+        ].join('\n\n'));
+    };
+
     const inHospital = () => {
         const mainDesc = $('.profile-container .main-desc');
         if (mainDesc && mainDesc.textContent.toLowerCase().includes('in hospital')) return true;
@@ -353,19 +383,7 @@
                 if (!res || !res.ok || !Array.isArray(res.notifications)) return;
 
                 for (const item of res.notifications) {
-                    const target = item.target_name || `Target ${item.target_id || '?'}`;
-                    const reviver = item.fulfilled_by_name || item.fulfilled_by_id || 'unknown reviver';
-                    const revivedAt = item.revived_timestamp
-                        ? new Date(item.revived_timestamp * 1000).toLocaleString()
-                        : 'unknown time';
-                    const requester = item.requester_name || 'requester';
-                    const payoutTemplate = buildPayoutTemplate(requester, target, reviver, revivedAt);
-                    alert([
-                        `Revive fulfilled for ${target}`,
-                        `Reviver: ${reviver}`,
-                        `Revived at: ${revivedAt}`,
-                        payoutTemplate
-                    ].join('\n\n'));
+                    showNotificationAlert(item);
                 }
             } catch (_err) {
                 // Listener offline should not spam alerts during passive polling.

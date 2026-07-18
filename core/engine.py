@@ -649,6 +649,20 @@ class TornIntel:
             print(report.requests_list(status=status, target_name=target_name, limit=limit))
             return
 
+        if action == "delete":
+            removed = repo.delete_requests(
+                status=status,
+                request_id=request_id,
+                requester_id=requester_id,
+                requester_name=requester_name,
+                target_id=target_id,
+                target_name=target_name,
+                source=source,
+            )
+            scope = status if status and status != "all" else "all"
+            print(f"Removed {removed} revive request(s) with status={scope}")
+            return
+
         raise ValueError(f"Unknown revive_requests action '{action}'")
 
     #######################################################

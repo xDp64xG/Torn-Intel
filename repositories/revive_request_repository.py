@@ -14,6 +14,7 @@ class ReviveRequestRepository(Repository):
     def __init__(self, database):
         super().__init__(database, ReviveRequest)
         self._ensure_columns()
+        self._ensure_notification_columns()
         self._backfill_revived_timestamps()
 
     ##########################################################
@@ -45,6 +46,174 @@ class ReviveRequestRepository(Repository):
             """,
             tuple(params),
         )
+
+    ##########################################################
+
+    def delete_requests(self, status="pending", request_id=None, requester_id=None, requester_name=None, target_id=None, target_name=None, source=None):
+
+        filters = []
+        params = []
+
+        if status and status != "all":
+            filters.append("status = ?")
+            params.append(status)
+
+        if request_id:
+            filters.append("request_id = ?")
+            params.append(str(request_id))
+
+        if requester_id is not None:
+            filters.append("requester_id = ?")
+            params.append(int(requester_id))
+
+        if requester_name:
+            filters.append("LOWER(requester_name) = LOWER(?)")
+            params.append(str(requester_name))
+
+        if target_id is not None:
+            filters.append("target_id = ?")
+            params.append(int(target_id))
+
+        if target_name:
+            filters.append("LOWER(target_name) = LOWER(?)")
+            params.append(str(target_name))
+
+        if source:
+            filters.append("source = ?")
+            params.append(str(source))
+
+        where_clause = " AND ".join(filters) if filters else "1=1"
+
+        rows = self.db.select(
+            f"""
+            SELECT COUNT(*) AS total
+            FROM revive_requests
+            WHERE {where_clause}
+            """,
+            tuple(params),
+        )
+        total = int(rows[0]["total"] or 0) if rows else 0
+
+        self.db.execute(
+            f"DELETE FROM revive_requests WHERE {where_clause}",
+            tuple(params),
+        )
+        self.db.commit()
+        return total
+
+    ##########################################################
+
+    def queue_notification(self, event_type, request, payload=None):
+
+        self._ensure_notification_columns()
+
+        def read(field, default=None):
+            if isinstance(request, dict):
+                return request.get(field, default)
+            try:
+                return request[field]
+            except Exception:
+                return getattr(request, field, default)
+
+        request_id = str(read("request_id") or "")
+        if not request_id:
+            return None
+
+        payload_dict = payload if isinstance(payload, dict) else {}
+        created_at = int(payload_dict.get("created_at") or time.time())
+        self.db.execute(
+            """
+            INSERT OR IGNORE INTO revive_request_notifications (
+                event_type,
+                request_id,
+                requester_id,
+                requester_name,
+                target_id,
+                target_name,
+                source,
+                status,
+                revived_timestamp,
+                fulfilled_by_id,
+                fulfilled_by_name,
+                notes,
+                payload,
+                created_at,
+                notified_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+            """,
+            (
+                str(event_type or "event"),
+                request_id,
+                int(read("requester_id") or 0) if read("requester_id") is not None else None,
+                read("requester_name"),
+                int(read("target_id") or 0) if read("target_id") is not None else None,
+                read("target_name"),
+                read("source"),
+                read("status"),
+                int(read("revived_timestamp") or 0) if read("revived_timestamp") is not None else None,
+                int(read("fulfilled_by_id") or 0) if read("fulfilled_by_id") is not None else None,
+                read("fulfilled_by_name"),
+                read("notes"),
+                json.dumps(payload_dict) if payload_dict else None,
+                created_at,
+            ),
+        )
+        self.db.commit()
+        rows = self.db.select(
+            """
+            SELECT *
+            FROM revive_request_notifications
+            WHERE request_id = ? AND event_type = ?
+            ORDER BY created_at DESC, notification_id DESC
+            LIMIT 1
+            """,
+            (request_id, str(event_type or "event")),
+        )
+        return rows[0] if rows else None
+
+    ##########################################################
+
+    def get_notifications(self, requester_id=None, requester_name=None, limit=10):
+
+        filters = ["notified_at IS NULL"]
+        params = []
+
+        if requester_id is not None:
+            filters.append("requester_id = ?")
+            params.append(int(requester_id))
+        elif requester_name:
+            filters.append("LOWER(requester_name) = LOWER(?)")
+            params.append(str(requester_name))
+
+        where_clause = " AND ".join(filters)
+        params.append(int(limit))
+
+        return self.db.select(
+            f"""
+            SELECT *
+            FROM revive_request_notifications
+            WHERE {where_clause}
+            ORDER BY created_at ASC, notification_id ASC
+            LIMIT ?
+            """,
+            tuple(params),
+        )
+
+    ##########################################################
+
+    def mark_notifications_notified(self, notification_ids):
+
+        ids = [int(nid) for nid in notification_ids if nid is not None]
+        if not ids:
+            return 0
+
+        placeholders = ",".join(["?"] * len(ids))
+        self.db.execute(
+            f"UPDATE revive_request_notifications SET notified_at = ? WHERE notification_id IN ({placeholders})",
+            (int(time.time()), *ids),
+        )
+        self.db.commit()
+        return len(ids)
 
     ##########################################################
 
@@ -362,6 +531,45 @@ class ReviveRequestRepository(Repository):
         if "notified_at" not in names:
             self.db.execute("ALTER TABLE revive_requests ADD COLUMN notified_at INTEGER")
             self.db.commit()
+
+    ##########################################################
+
+    def _ensure_notification_columns(self):
+
+        if not self.db.table_exists("revive_request_notifications"):
+            self.db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS revive_request_notifications (
+                    notification_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_type TEXT NOT NULL,
+                    request_id TEXT NOT NULL,
+                    requester_id INTEGER,
+                    requester_name TEXT,
+                    target_id INTEGER,
+                    target_name TEXT,
+                    source TEXT,
+                    status TEXT,
+                    revived_timestamp INTEGER,
+                    fulfilled_by_id INTEGER,
+                    fulfilled_by_name TEXT,
+                    notes TEXT,
+                    payload TEXT,
+                    created_at INTEGER NOT NULL,
+                    notified_at INTEGER,
+                    UNIQUE(request_id, event_type)
+                )
+                """
+            )
+            self.db.commit()
+            return
+
+        columns = self.db.select("PRAGMA table_info(revive_request_notifications)")
+        names = {str(col["name"]).lower() for col in columns}
+
+        if "payload" not in names:
+            self.db.execute("ALTER TABLE revive_request_notifications ADD COLUMN payload TEXT")
+            self.db.commit()
+
 
     ##########################################################
 

@@ -579,8 +579,8 @@ def build_parser():
 
     revive_requests.add_argument(
         "action",
-        choices=["add", "list", "reconcile"],
-        help="add: create a revive request. list: view pending/fulfilled requests. reconcile: match pending requests against synced revives."
+        choices=["add", "list", "reconcile", "delete"],
+        help="add: create a revive request. list: view pending/fulfilled requests. reconcile: match pending requests against synced revives. delete: remove revive requests for testing/cleanup."
     )
 
     revive_requests.add_argument("--request-id", dest="request_id", type=str, default=None)
