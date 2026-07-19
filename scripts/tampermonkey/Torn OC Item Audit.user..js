@@ -10,8 +10,8 @@
 // @homepageURL  https://github.com/xDp64xG/Torn-Intel
 // @supportURL   https://github.com/xDp64xG/Torn-Intel/issues
 // @connect      api.torn.com
-// @updateURL    https://raw.githubusercontent.com/xDp64xG/Torn-Intel/main/scripts/tampermonkey/Torn%20OC%20Item%20Audit.js
-// @downloadURL  https://raw.githubusercontent.com/xDp64xG/Torn-Intel/main/scripts/tampermonkey/Torn%20OC%20Item%20Audit.js
+// @updateURL    https://raw.githubusercontent.com/xDp64xG/Torn-Intel/main/scripts/tampermonkey/Torn%20OC%20Item%20Audit.user.js
+// @downloadURL  https://raw.githubusercontent.com/xDp64xG/Torn-Intel/main/scripts/tampermonkey/Torn%20OC%20Item%20Audit.user.js
 // ==/UserScript==
 
 (function () {
