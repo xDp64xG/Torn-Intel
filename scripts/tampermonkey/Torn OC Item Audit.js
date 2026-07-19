@@ -1,12 +1,14 @@
 // ==UserScript==
 // @name         Torn OC Item Audit
-// @namespace    GTS
+// @namespace    http://tampermonkey.net/
 // @version      1.5
 // @match        https://www.torn.com/factions.php*
 // @grant        GM_registerMenuCommand
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_xmlhttpRequest
+// @homepageURL  https://github.com/xDp64xG/Torn-Intel
+// @supportURL   https://github.com/xDp64xG/Torn-Intel/issues
 // @connect      api.torn.com
 // @updateURL    https://raw.githubusercontent.com/xDp64xG/Torn-Intel/main/scripts/tampermonkey/Torn%20OC%20Item%20Audit.js
 // @downloadURL  https://raw.githubusercontent.com/xDp64xG/Torn-Intel/main/scripts/tampermonkey/Torn%20OC%20Item%20Audit.js
