@@ -7,6 +7,7 @@ SQLite database manager for TornIntel.
 from __future__ import annotations
 
 import sqlite3
+import threading
 from pathlib import Path
 
 
@@ -23,11 +24,15 @@ class Database:
             exist_ok=True
         )
 
-        self.connection = sqlite3.connect(db_path)
+        self._lock = threading.RLock()
+        self._local = threading.local()
+
+        self.connection = sqlite3.connect(
+            db_path,
+            check_same_thread=False
+        )
 
         self.connection.row_factory = sqlite3.Row
-
-        self.cursor = self.connection.cursor()
 
         self.logger.success(
             f"Connected to {db_path}"
@@ -37,45 +42,57 @@ class Database:
 
     def execute(self, sql, params=()):
 
-        self.cursor.execute(sql, params)
-
-        return self.cursor
+        with self._lock:
+            cursor = self.connection.execute(sql, params)
+            self._local.cursor = cursor
+            return cursor
 
     #######################################################
 
     def executemany(self, sql, values):
 
-        self.cursor.executemany(sql, values)
+        with self._lock:
+            cursor = self.connection.executemany(sql, values)
+            self._local.cursor = cursor
 
     #######################################################
 
     def commit(self):
 
-        self.connection.commit()
+        with self._lock:
+            self.connection.commit()
 
     #######################################################
 
     def rollback(self):
 
-        self.connection.rollback()
+        with self._lock:
+            self.connection.rollback()
 
     #######################################################
 
     def close(self):
 
-        self.connection.close()
+        with self._lock:
+            self.connection.close()
 
     #######################################################
 
     def fetchone(self):
 
-        return self.cursor.fetchone()
+        cursor = getattr(self._local, "cursor", None)
+        if cursor is None:
+            raise RuntimeError("No active cursor for current thread")
+        return cursor.fetchone()
 
     #######################################################
 
     def fetchall(self):
 
-        return self.cursor.fetchall()
+        cursor = getattr(self._local, "cursor", None)
+        if cursor is None:
+            raise RuntimeError("No active cursor for current thread")
+        return cursor.fetchall()
 
     #######################################################
 
