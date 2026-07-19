@@ -40,6 +40,7 @@
     const DEBUG_BADGE_ID = 'tornintel-local-revive-debug';
     const ICON_POS_KEY = 'tornintel_local_revive_icon_position_v2';
     const BUTTON_RECHECK_MS = 5000;
+    const MOUNT_DEBOUNCE_MS = 120;
     const ICON_DRAG_THRESHOLD = 8;
     const DEBUG_DIAGNOSTIC_DELAY_MS = 8000;
 
@@ -60,8 +61,21 @@
         lastError: null,
         bootedAt: Date.now(),
         debugPopupShown: false,
-        mountPasses: 0
+        mountPasses: 0,
+        mountTimer: null,
+        lastUrl: window.location.href
     };
+
+    const OWNED_NODE_SELECTORS = [
+        `#${BUTTON_ID}`,
+        `#${ICON_ID}`,
+        `#${PDA_BAR_BUTTON_ID}`,
+        `#${DEBUG_BADGE_ID}`,
+        '#tornintel-revive-notice-stack',
+        '#tornintel-revive-notice-style',
+        '#tornintel-revive-pda-bar-btn-style',
+        '#tornintel-revive-icon-style'
+    ];
 
     const debugLog = (message, popup = false) => {
         const line = `[TornIntel][debug] ${message}`;
@@ -77,6 +91,48 @@
             document.getElementById(PDA_BAR_BUTTON_ID) ||
             document.getElementById(ICON_ID)
         );
+    };
+
+    const isOwnedNode = (node) => {
+        if (!(node instanceof Element)) return false;
+        return OWNED_NODE_SELECTORS.some((selector) => node.matches(selector) || node.closest(selector));
+    };
+
+    const shouldIgnoreMutations = (mutations) => {
+        if (!Array.isArray(mutations) || mutations.length === 0) return false;
+        return mutations.every((mutation) => {
+            const nodes = [...mutation.addedNodes, ...mutation.removedNodes];
+            return nodes.length > 0 && nodes.every(isOwnedNode);
+        });
+    };
+
+    const removeElementById = (id) => {
+        document.getElementById(id)?.remove();
+    };
+
+    const cleanupMountedControls = () => {
+        removeElementById(BUTTON_ID);
+        removeElementById(PDA_BAR_BUTTON_ID);
+        removeElementById(ICON_ID);
+    };
+
+    const bindPress = (node, handler) => {
+        let pointerHandledAt = 0;
+
+        node.addEventListener('pointerup', async (event) => {
+            if (event.pointerType === 'mouse' && event.button !== 0) return;
+            pointerHandledAt = Date.now();
+            event.preventDefault();
+            event.stopPropagation();
+            await handler(event);
+        });
+
+        node.addEventListener('click', async (event) => {
+            if ((Date.now() - pointerHandledAt) < 700) return;
+            event.preventDefault();
+            event.stopPropagation();
+            await handler(event);
+        });
     };
 
     const gmGetValue = (key, fallback = '') => {
@@ -515,6 +571,11 @@
         return { target_id: userId ? parseInt(userId, 10) : null, target_name: name };
     };
 
+    const shouldMountControls = () => {
+        const { target_id, target_name } = getProfileTarget();
+        return Boolean(target_id || target_name || document.querySelector('.profile-container'));
+    };
+
     const buildPayoutTemplate = (requesterName, targetName, reviverName, revivedAt) => {
         return [
             'Payout template:',
@@ -637,6 +698,7 @@
                 min-height: 30px;
                 box-shadow: 0 6px 14px rgba(0, 0, 0, 0.35);
                 white-space: nowrap;
+                touch-action: manipulation;
             }
         `);
         const styleTag = document.createElement('style');
@@ -683,9 +745,7 @@
         btn.textContent = 'Revive';
         btn.title = 'Local Revive Request';
         btn.setAttribute('aria-label', 'Local Revive Request');
-        btn.addEventListener('click', async (event) => {
-            event?.preventDefault?.();
-            event?.stopPropagation?.();
+        bindPress(btn, async () => {
             await submitReviveRequest(btn);
         });
 
@@ -752,7 +812,7 @@
                 line-height: 1.1;
                 user-select: none;
                 -webkit-user-select: none;
-                touch-action: none;
+                touch-action: manipulation;
             }
             .tornintel-revive-icon:active {
                 transform: scale(0.98);
@@ -892,10 +952,7 @@
         icon.style.left = `${position.x}px`;
         icon.style.top = `${position.y}px`;
 
-        // Mobile safe mode: avoid pointer capture/drag logic that can interfere with PDA input handling.
-        icon.addEventListener('click', async (event) => {
-            event?.preventDefault?.();
-            event?.stopPropagation?.();
+        bindPress(icon, async () => {
             await submitReviveRequest(icon);
         });
 
@@ -936,11 +993,9 @@
         btn.textContent = 'Local Revive Request';
         applyButtonStyle(btn, mode);
 
-        btn.onclick = async (event) => {
-            event?.preventDefault?.();
-            event?.stopPropagation?.();
+        bindPress(btn, async () => {
             await submitReviveRequest(btn);
-        };
+        });
 
         if (container) {
             container.appendChild(btn);
@@ -951,6 +1006,14 @@
     };
 
     const startButtonMounting = () => {
+        const queueMount = (reason) => {
+            if (state.mountTimer) return;
+            state.mountTimer = window.setTimeout(() => {
+                state.mountTimer = null;
+                runMountPass(reason);
+            }, MOUNT_DEBOUNCE_MS);
+        };
+
         const emitDelayedDiagnosticsIfMissing = () => {
             window.setTimeout(() => {
                 if (state.debugPopupShown) return;
@@ -974,16 +1037,29 @@
             }, DEBUG_DIAGNOSTIC_DELAY_MS);
         };
 
-        const boot = () => {
+        const runMountPass = (reason = 'boot') => {
             if (!document.body) {
-                window.setTimeout(boot, 250);
+                window.setTimeout(() => queueMount(`${reason}:body-wait`), 250);
                 return;
+            }
+
+            if (state.lastUrl !== window.location.href) {
+                state.lastUrl = window.location.href;
+                cleanupMountedControls();
+                debugLog(`Route changed, cleared stale controls for ${state.lastUrl}`);
             }
 
             try {
                 state.mountPasses += 1;
-                debugLog(`Mount pass ${state.mountPasses} started`);
+                debugLog(`Mount pass ${state.mountPasses} started (${reason})`);
                 ensureDebugBadge();
+
+                if (!shouldMountControls()) {
+                    cleanupMountedControls();
+                    debugLog(`Mount pass ${state.mountPasses} skipped: no profile target`);
+                    return;
+                }
+
                 addButton();
 
                 if (isMobileClient()) {
@@ -1004,17 +1080,11 @@
             }
 
             if (!state.buttonObserverStarted) {
-                new MutationObserver(() => {
+                new MutationObserver((mutations) => {
+                    if (shouldIgnoreMutations(mutations)) return;
+                    if (state.lastUrl === window.location.href && hasVisibleControl()) return;
                     try {
-                        ensureDebugBadge();
-                        addButton();
-                        if (isMobileClient()) {
-                            tryMountPdaBarButton();
-                            addDraggableMobileIcon();
-                        }
-                        if (!document.getElementById(BUTTON_ID) && !document.getElementById(PDA_BAR_BUTTON_ID) && !document.getElementById(ICON_ID)) {
-                            addDraggableMobileIcon(true);
-                        }
+                        queueMount('mutation');
                     } catch (err) {
                         reportScriptError('observer', err);
                     }
@@ -1025,14 +1095,8 @@
             if (!state.buttonRecheckTimer) {
                 state.buttonRecheckTimer = window.setInterval(() => {
                     try {
-                        ensureDebugBadge();
-                        addButton();
-                        if (isMobileClient()) {
-                            tryMountPdaBarButton();
-                            addDraggableMobileIcon();
-                        }
-                        if (!document.getElementById(BUTTON_ID) && !document.getElementById(PDA_BAR_BUTTON_ID) && !document.getElementById(ICON_ID)) {
-                            addDraggableMobileIcon(true);
+                        if (state.lastUrl !== window.location.href || !hasVisibleControl()) {
+                            queueMount('interval');
                         }
                     } catch (err) {
                         reportScriptError('interval', err);
@@ -1042,7 +1106,7 @@
         };
 
         emitDelayedDiagnosticsIfMissing();
-        boot();
+        queueMount('boot');
     };
 
     window.addEventListener('error', (event) => {
