@@ -199,6 +199,7 @@ class ReviveDiscordStore:
     def __init__(self, database_path: Path):
         self.database_path = Path(database_path)
         self._ensure_tables()
+        self._ensure_notification_columns()
 
     #######################################################
 
@@ -247,6 +248,51 @@ class ReviveDiscordStore:
                 """
             )
             conn.commit()
+        finally:
+            conn.close()
+
+    #######################################################
+
+    def _ensure_notification_columns(self):
+        conn = self._connect()
+        try:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS revive_request_notifications (
+                    notification_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_type TEXT NOT NULL,
+                    request_id TEXT NOT NULL,
+                    requester_id INTEGER,
+                    requester_name TEXT,
+                    target_id INTEGER,
+                    target_name TEXT,
+                    request_kind TEXT,
+                    source TEXT,
+                    status TEXT,
+                    revived_timestamp INTEGER,
+                    fulfilled_by_id INTEGER,
+                    fulfilled_by_name TEXT,
+                    notes TEXT,
+                    payload TEXT,
+                    created_at INTEGER NOT NULL,
+                    discord_posted_at INTEGER,
+                    notified_at INTEGER,
+                    UNIQUE(request_id, event_type)
+                )
+                """
+            )
+            conn.commit()
+
+            columns = conn.execute("PRAGMA table_info(revive_request_notifications)").fetchall()
+            names = {str(col[1]).lower() for col in columns}
+
+            if "request_kind" not in names:
+                conn.execute("ALTER TABLE revive_request_notifications ADD COLUMN request_kind TEXT")
+                conn.commit()
+
+            if "discord_posted_at" not in names:
+                conn.execute("ALTER TABLE revive_request_notifications ADD COLUMN discord_posted_at INTEGER")
+                conn.commit()
         finally:
             conn.close()
 
@@ -549,6 +595,44 @@ class ReviveDiscordStore:
                 WHERE request_id = ?
                 """,
                 (str(request_id),),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    #######################################################
+
+    def list_unposted_notifications(self, limit: int = 50):
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM revive_request_notifications
+                WHERE COALESCE(discord_posted_at, 0) = 0
+                  AND LOWER(event_type) IN ('revive_request_received', 'request_received')
+                ORDER BY created_at ASC, notification_id ASC
+                LIMIT ?
+                """,
+                (int(limit),),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    #######################################################
+
+    def mark_notification_discord_posted(self, notification_id: int, channel_id: int | None = None, message_id: int | None = None):
+        conn = self._connect()
+        try:
+            conn.execute(
+                """
+                UPDATE revive_request_notifications
+                SET discord_posted_at = ?,
+                    payload = COALESCE(payload, payload)
+                WHERE notification_id = ?
+                """,
+                (int(time.time()), int(notification_id)),
             )
             conn.commit()
         finally:
@@ -939,6 +1023,7 @@ def serve_discord_bot(token: str, prefix: str = "!ti", guild_id: int | None = No
     bot = commands.Bot(command_prefix=prefix, intents=intents)
     allow_prefix_commands = bool(settings.discord_enable_message_content_intent)
     revive_watcher_task = None
+    revive_request_alert_task = None
 
     def embed_color(ok: bool):
         return 0x2ecc71 if ok else 0xe74c3c
@@ -1728,6 +1813,73 @@ def serve_discord_bot(token: str, prefix: str = "!ti", guild_id: int | None = No
 
             await asyncio.sleep(5)
 
+    async def revive_request_alert_watcher():
+        poll_seconds = max(5, int(getattr(settings, "discord_revive_poll_seconds", 20) or 20))
+
+        while not bot.is_closed():
+            try:
+                rows = revive_store.list_unposted_notifications(limit=50)
+                if not rows:
+                    await asyncio.sleep(poll_seconds)
+                    continue
+
+                channel_id = resolve_revive_channel_id()
+                if channel_id is None:
+                    if logger:
+                        logger.warning("Revive request alert watcher skipped: no revive channel configured")
+                    await asyncio.sleep(poll_seconds)
+                    continue
+
+                channel = bot.get_channel(int(channel_id))
+                if channel is None:
+                    try:
+                        channel = await bot.fetch_channel(int(channel_id))
+                    except Exception as exc:
+                        if logger:
+                            logger.warning(f"Revive request alert watcher could not fetch channel {channel_id}: {type(exc).__name__}: {exc}")
+                        await asyncio.sleep(poll_seconds)
+                        continue
+
+                for row in rows:
+                    try:
+                        request_id = str(row.get("request_id") or "")
+                        if not request_id:
+                            continue
+
+                        target_id = int(row.get("target_id") or 0)
+                        requester_name = str(row.get("requester_name") or f"Requester {row.get('requester_id') or '?'}")
+                        target_name = str(row.get("target_name") or f"User {target_id or '?'}")
+                        request_kind = str(row.get("request_kind") or "revive")
+                        notes = str(row.get("notes") or "Requested via local revive listener")
+
+                        embed = build_revive_request_embed(
+                            request_id=request_id,
+                            requester_name=requester_name,
+                            requester_torn_id=row.get("requester_id"),
+                            target_id=target_id,
+                            target_name=target_name,
+                            hospital_description=notes,
+                            request_kind=request_kind,
+                            cancelled=False,
+                        )
+                        message = await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+                        revive_store.mark_notification_discord_posted(int(row["notification_id"]))
+                        if logger:
+                            logger.info(
+                                f"Posted Discord revive alert for {request_kind.lower()} request {request_id} to channel {channel_id} (message {message.id})"
+                            )
+                    except Exception as exc:
+                        if logger:
+                            logger.warning(
+                                f"Failed to post revive request alert for {row.get('request_id')}: {type(exc).__name__}: {exc}"
+                            )
+                await asyncio.sleep(1)
+            except Exception as exc:
+                if logger:
+                    logger.warning(f"Revive request alert watcher error: {type(exc).__name__}: {exc}")
+
+            await asyncio.sleep(poll_seconds)
+
     async def report_type_autocomplete(interaction, current: str):
         module = str(getattr(interaction.namespace, "module", "") or "")
         types = REPORT_TYPES_BY_MODULE.get(module, [])
@@ -1753,7 +1905,7 @@ def serve_discord_bot(token: str, prefix: str = "!ti", guild_id: int | None = No
 
     @bot.event
     async def on_ready():
-        nonlocal revive_watcher_task
+        nonlocal revive_watcher_task, revive_request_alert_task
         if logger:
             logger.success(f"Discord bot logged in as {bot.user}")
             try:
@@ -1801,6 +1953,11 @@ def serve_discord_bot(token: str, prefix: str = "!ti", guild_id: int | None = No
             revive_watcher_task = asyncio.create_task(revive_fulfillment_watcher())
             if logger:
                 logger.info("Started revive fulfillment watcher task")
+
+        if revive_request_alert_task is None or revive_request_alert_task.done():
+            revive_request_alert_task = asyncio.create_task(revive_request_alert_watcher())
+            if logger:
+                logger.info("Started revive request alert watcher task")
 
     if allow_prefix_commands:
         @bot.command(name="ti")

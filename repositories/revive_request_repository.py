@@ -130,6 +130,7 @@ class ReviveRequestRepository(Repository):
                 requester_name,
                 target_id,
                 target_name,
+                request_kind,
                 source,
                 status,
                 revived_timestamp,
@@ -138,8 +139,9 @@ class ReviveRequestRepository(Repository):
                 notes,
                 payload,
                 created_at,
+                discord_posted_at,
                 notified_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
             """,
             (
                 str(event_type or "event"),
@@ -148,6 +150,7 @@ class ReviveRequestRepository(Repository):
                 read("requester_name"),
                 int(read("target_id") or 0) if read("target_id") is not None else None,
                 read("target_name"),
+                read("request_kind"),
                 read("source"),
                 read("status"),
                 int(read("revived_timestamp") or 0) if read("revived_timestamp") is not None else None,
@@ -588,6 +591,7 @@ class ReviveRequestRepository(Repository):
                     requester_name TEXT,
                     target_id INTEGER,
                     target_name TEXT,
+                    request_kind TEXT,
                     source TEXT,
                     status TEXT,
                     revived_timestamp INTEGER,
@@ -596,6 +600,7 @@ class ReviveRequestRepository(Repository):
                     notes TEXT,
                     payload TEXT,
                     created_at INTEGER NOT NULL,
+                    discord_posted_at INTEGER,
                     notified_at INTEGER,
                     UNIQUE(request_id, event_type)
                 )
@@ -609,6 +614,14 @@ class ReviveRequestRepository(Repository):
 
         if "payload" not in names:
             self.db.execute("ALTER TABLE revive_request_notifications ADD COLUMN payload TEXT")
+            self.db.commit()
+
+        if "request_kind" not in names:
+            self.db.execute("ALTER TABLE revive_request_notifications ADD COLUMN request_kind TEXT")
+            self.db.commit()
+
+        if "discord_posted_at" not in names:
+            self.db.execute("ALTER TABLE revive_request_notifications ADD COLUMN discord_posted_at INTEGER")
             self.db.commit()
 
 
