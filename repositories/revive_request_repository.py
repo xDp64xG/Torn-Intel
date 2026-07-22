@@ -223,6 +223,7 @@ class ReviveRequestRepository(Repository):
             target_id=values.get("target_id"),
             target_name=values.get("target_name"),
             source=values.get("source"),
+            request_kind=values.get("request_kind"),
             requester_id=values.get("requester_id"),
             requester_name=values.get("requester_name"),
             requested_timestamp=values.get("requested_timestamp"),
@@ -301,6 +302,7 @@ class ReviveRequestRepository(Repository):
         target_id=None,
         target_name=None,
         source=None,
+        request_kind=None,
         requester_id=None,
         requester_name=None,
         requested_timestamp=None,
@@ -323,6 +325,10 @@ class ReviveRequestRepository(Repository):
         if not match_any_source:
             base_filters.append("source = ?")
             base_params.append(str(source or "external"))
+
+        if request_kind:
+            base_filters.append("LOWER(COALESCE(request_kind, 'revive')) = LOWER(?)")
+            base_params.append(str(request_kind))
 
         if requester_id is not None:
             base_filters.append("requester_id = ?")
@@ -561,6 +567,10 @@ class ReviveRequestRepository(Repository):
 
         if "notified_at" not in names:
             self.db.execute("ALTER TABLE revive_requests ADD COLUMN notified_at INTEGER")
+            self.db.commit()
+
+        if "request_kind" not in names:
+            self.db.execute("ALTER TABLE revive_requests ADD COLUMN request_kind TEXT")
             self.db.commit()
 
     ##########################################################

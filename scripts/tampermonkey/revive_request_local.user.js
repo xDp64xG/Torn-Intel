@@ -39,6 +39,7 @@
     const PDA_BAR_BUTTON_ID = 'tornintel-local-revive-pda-bar-btn';
     const DEBUG_BADGE_ID = 'tornintel-local-revive-debug';
     const ICON_POS_KEY = 'tornintel_local_revive_icon_position_v2';
+    const REQUEST_KIND_KEY = 'tornintel_local_revive_request_kind';
     const BUTTON_RECHECK_MS = 5000;
     const MOUNT_DEBOUNCE_MS = 120;
     const ICON_DRAG_THRESHOLD = 8;
@@ -190,6 +191,26 @@
 
     const getOverrideBaseUrl = () => trimSlash(gmGetValue(BASE_URL_KEY, ''));
     const setOverrideBaseUrl = url => gmSetValue(BASE_URL_KEY, trimSlash(url));
+    const normalizeRequestKind = value => String(value || 'revive').trim().toLowerCase() === 'contract' ? 'contract' : 'revive';
+    const getRequestKind = () => normalizeRequestKind(gmGetValue(REQUEST_KIND_KEY, 'revive'));
+    const setRequestKind = value => gmSetValue(REQUEST_KIND_KEY, normalizeRequestKind(value));
+    const getRequestKindLabel = value => normalizeRequestKind(value) === 'contract' ? 'Contract Request' : 'Local Revive Request';
+    const refreshRequestKindLabels = () => {
+        const label = getRequestKindLabel();
+        [BUTTON_ID, PDA_BAR_BUTTON_ID, ICON_ID].forEach((id) => {
+            const node = document.getElementById(id);
+            if (!node) return;
+            node.textContent = label;
+            node.title = label;
+            node.setAttribute('aria-label', label);
+        });
+    };
+    const toggleRequestKind = () => {
+        const next = getRequestKind() === 'contract' ? 'revive' : 'contract';
+        setRequestKind(next);
+        refreshRequestKindLabels();
+        showNotice(`Revive request type set to ${next}.`, 'success');
+    };
 
     const endpoint = (baseUrl, path) => `${trimSlash(baseUrl)}${path}`;
 
@@ -366,6 +387,7 @@
     };
 
     gmRegisterMenuCommandSafe('TornIntel: Set/Clear Revive Listener Override URL', configureEndpoint);
+    gmRegisterMenuCommandSafe('TornIntel: Toggle Revive Request Type', toggleRequestKind);
 
     const $ = (s, p = document) => p.querySelector(s);
 
@@ -742,9 +764,9 @@
         btn.id = PDA_BAR_BUTTON_ID;
         btn.type = 'button';
         btn.className = 'tornintel-revive-pda-bar-btn';
-        btn.textContent = 'Revive';
-        btn.title = 'Local Revive Request';
-        btn.setAttribute('aria-label', 'Local Revive Request');
+        btn.textContent = getRequestKindLabel();
+        btn.title = getRequestKindLabel();
+        btn.setAttribute('aria-label', getRequestKindLabel());
         bindPress(btn, async () => {
             await submitReviveRequest(btn);
         });
@@ -833,7 +855,7 @@
 
         const previousText = trigger?.textContent;
         if (trigger && trigger.id === BUTTON_ID) {
-            trigger.textContent = 'Submitting...';
+            trigger.textContent = `Submitting ${getRequestKindLabel()}...`;
         }
 
         try {
@@ -874,8 +896,9 @@
                 requester_id,
                 target_id,
                 target_name,
+                request_kind: getRequestKind(),
                 source: 'tampermonkey-local',
-                notes: `Requested from ${window.location.href}`,
+                notes: `${getRequestKindLabel()}; requested from ${window.location.href}`,
             };
 
             try {
@@ -885,7 +908,7 @@
                 const request = res.request || {};
                 const status = request.status || 'pending';
                 showNotice([
-                    `Revive request sent as ${status}.`,
+                    `${getRequestKindLabel()} sent as ${status}.`,
                     `Endpoint: ${baseUrl}`,
                     'Listener will post lifecycle updates automatically.'
                 ].filter(Boolean).join('\n\n'), status === 'fulfilled' ? 'success' : 'info');
@@ -926,9 +949,9 @@
         icon.id = ICON_ID;
         icon.type = 'button';
         icon.className = 'tornintel-revive-icon';
-        icon.textContent = 'Revive';
-        icon.title = 'Local Revive Request';
-        icon.setAttribute('aria-label', 'Local Revive Request');
+        icon.textContent = getRequestKindLabel();
+        icon.title = getRequestKindLabel();
+        icon.setAttribute('aria-label', getRequestKindLabel());
 
         try {
             document.body.appendChild(icon);
@@ -990,7 +1013,7 @@
         const btn = document.createElement('button');
         btn.id = BUTTON_ID;
         btn.type = 'button';
-        btn.textContent = 'Local Revive Request';
+        btn.textContent = getRequestKindLabel();
         applyButtonStyle(btn, mode);
 
         bindPress(btn, async () => {

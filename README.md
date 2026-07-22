@@ -880,6 +880,7 @@ Use one of these for the first `base_urls` entry:
 
 Optional admin override (not needed for normal users):
 - Tampermonkey menu command: `TornIntel: Set/Clear Revive Listener Override URL`
+- Tampermonkey menu command: `TornIntel: Toggle Revive Request Type` to switch between regular revive and contract requests.
 
 If it still fails from another machine, verify:
 - Both machines are on the same network/VPN and can ping each other.

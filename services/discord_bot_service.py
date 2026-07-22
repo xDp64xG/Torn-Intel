@@ -1078,24 +1078,29 @@ def serve_discord_bot(token: str, prefix: str = "!ti", guild_id: int | None = No
         target_id: int,
         target_name: str,
         hospital_description: str,
+        request_kind: str | None = None,
         cancelled: bool = False,
         fulfilled: bool = False,
         reviver_name: str | None = None,
         reviver_id: int | None = None,
         revived_timestamp: int | None = None,
     ):
+        kind = str(request_kind or "revive").strip().lower()
+        kind_label = "Contract" if kind == "contract" else "Revive"
+
         if fulfilled:
             color = 0x2ecc71
-            title = "Revive Request Fulfilled"
+            title = f"{kind_label} Request Fulfilled"
         elif cancelled:
             color = 0x7f8c8d
-            title = "Revive Request Cancelled"
+            title = f"{kind_label} Request Cancelled"
         else:
             color = 0xe67e22
-            title = "Revive Request Active"
+            title = f"{kind_label} Request Active"
 
         embed = discord.Embed(title=title, color=color)
         embed.add_field(name="Request ID", value=str(request_id), inline=False)
+        embed.add_field(name="Kind", value=kind_label, inline=False)
         target_url = f"https://www.torn.com/profiles.php?XID={int(target_id)}"
         embed.add_field(name="Target", value=f"[{target_name} [{target_id}]]({target_url})", inline=False)
         requester_label = f"{requester_name} [{requester_torn_id}]" if requester_torn_id else requester_name
@@ -1120,11 +1125,11 @@ def serve_discord_bot(token: str, prefix: str = "!ti", guild_id: int | None = No
             if revived_timestamp:
                 revived_text = datetime.fromtimestamp(int(revived_timestamp)).strftime("%m-%d %H:%M")
                 embed.add_field(name="Revived At", value=revived_text, inline=False)
-            embed.set_footer(text="Fulfillment detected from TornIntel revive records")
+            embed.set_footer(text=f"Fulfillment detected from TornIntel {kind_label.lower()} records")
         elif cancelled:
             embed.set_footer(text="Cancelled from Discord command")
         else:
-            embed.set_footer(text="Use /ti_revive_cancel <request_id> to cancel while pending")
+            embed.set_footer(text=f"Use /ti_revive_cancel <request_id> to cancel while pending")
 
         return embed
 
@@ -1626,6 +1631,7 @@ def serve_discord_bot(token: str, prefix: str = "!ti", guild_id: int | None = No
             target_id=resolved_target_id,
             target_name=target_name,
             hospital_description=str(status.get("description") or "In hospital"),
+            request_kind="revive",
             cancelled=False,
         )
         message = await revive_channel.send(embed=request_embed, allowed_mentions=discord.AllowedMentions.none())
@@ -1703,6 +1709,7 @@ def serve_discord_bot(token: str, prefix: str = "!ti", guild_id: int | None = No
                             target_id=int(row.get("target_id") or 0),
                             target_name=str(row.get("target_name") or f"User {row.get('target_id') or '?'}"),
                             hospital_description="Revive completed",
+                            request_kind=row.get("request_kind"),
                             fulfilled=True,
                             reviver_name=str(row.get("fulfilled_by_name") or "") if row.get("fulfilled_by_name") is not None else None,
                             reviver_id=int(row.get("fulfilled_by_id")) if row.get("fulfilled_by_id") is not None else None,
@@ -1967,6 +1974,7 @@ def serve_discord_bot(token: str, prefix: str = "!ti", guild_id: int | None = No
                     target_id=int(request_row.get("target_id") or 0),
                     target_name=str(request_row.get("target_name") or f"User {request_row.get('target_id') or '?'}"),
                     hospital_description="Cancelled via Discord command",
+                    request_kind=request_row.get("request_kind"),
                     cancelled=True,
                 )
                 await message.edit(embed=edited)

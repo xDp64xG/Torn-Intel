@@ -48,6 +48,10 @@ class ReviveRequestListener:
             except Exception:
                 return getattr(row, field, default)
 
+        def request_kind_label(row):
+            kind = str(row_value(row, "request_kind") or "revive").strip().lower()
+            return "Contract" if kind == "contract" else "Revive"
+
         def log_fulfilled_request(request, source):
             target = highlight(row_value(request, "target_name") or f"Target {row_value(request, 'target_id') or '?'}")
             reviver = success(row_value(request, "fulfilled_by_name") or str(row_value(request, "fulfilled_by_id") or "unknown reviver"))
@@ -55,12 +59,13 @@ class ReviveRequestListener:
             revived_text = time.strftime("%m-%d %H:%M:%S", time.localtime(revived_at)) if revived_at else "unknown time"
             request_id = muted(str(row_value(request, "request_id") or "?"))
             requester = highlight(row_value(request, "requester_name") or f"Requester {row_value(request, 'requester_id') or '?'}")
+            kind = request_kind_label(request)
             payout_template = (
-                f"Payout template: {requester}, your revive request for {target} was fulfilled by {reviver} "
+                f"Payout template: {requester}, your {kind.lower()} request for {target} was fulfilled by {reviver} "
                 f"at {revived_text}. Please send the agreed payout."
             )
             logger.success(
-                f"{info('Revive request fulfilled')} [{source}] {target} by {reviver} at {success(revived_text)} ({request_id})"
+                f"{info(f'{kind} request fulfilled')} [{source}] {target} by {reviver} at {success(revived_text)} ({request_id})"
             )
             logger.info(payout_template)
 
@@ -72,13 +77,14 @@ class ReviveRequestListener:
             request_id = muted(str(row_value(request, "request_id") or "?"))
             source_text = muted(str(row_value(request, "source") or source or "external"))
             notes = row_value(request, "notes")
+            kind = request_kind_label(request)
 
             logger.info(
-                f"{info('Revive request received')} [{source}] {target} by {requester} at {success(requested_text)} ({request_id})"
+                f"{info(f'{kind} request received')} [{source}] {target} by {requester} at {success(requested_text)} ({request_id})"
             )
             logger.info(
                 "Revive request details: "
-                f"request_id={request_id} | requester={requester} | target={target} | "
+                f"request_id={request_id} | requester={requester} | target={target} | kind={muted(kind.lower())} | "
                 f"source={source_text} | notes={muted(str(notes)) if notes else muted('-')}"
             )
 
@@ -103,25 +109,27 @@ class ReviveRequestListener:
             requested_text = time.strftime("%m-%d %H:%M:%S", time.localtime(requested_at)) if requested_at else "unknown time"
 
             if event_type in ("revive_request_received", "request_received"):
+                kind = request_kind_label(notification)
                 logger.info(
-                    f"{info('Revive request received')} {target} by {requester} at {success(requested_text)} "
+                    f"{info(f'{kind} request received')} {target} by {requester} at {success(requested_text)} "
                     f"({muted(str(row_value(notification, 'request_id') or '?'))})"
                 )
                 logger.info(
-                    f"Request details: requester={requester} | target={target} | source={muted(str(row_value(notification, 'source') or '-'))} | "
+                    f"Request details: requester={requester} | target={target} | kind={muted(kind.lower())} | source={muted(str(row_value(notification, 'source') or '-'))} | "
                     f"notes={muted(str(row_value(notification, 'notes') or '-'))}"
                 )
                 return
 
+            kind = request_kind_label(notification)
             reviver = success(row_value(notification, "fulfilled_by_name") or str(row_value(notification, "fulfilled_by_id") or "unknown reviver"))
             revived_at = int(row_value(notification, "revived_timestamp") or row_value(notification, "fulfilled_at") or 0)
             revived_text = time.strftime("%m-%d %H:%M:%S", time.localtime(revived_at)) if revived_at else "unknown time"
             logger.info(
-                f"{info('Revive request fulfilled')} {target} by {reviver} at {success(revived_text)} "
+                f"{info(f'{kind} request fulfilled')} {target} by {reviver} at {success(revived_text)} "
                 f"({muted(str(row_value(notification, 'request_id') or '?'))})"
             )
             logger.info(
-                f"Fulfillment details: requester={requester} | target={target} | reviver={reviver} | revived_at={success(revived_text)}"
+                f"Fulfillment details: requester={requester} | target={target} | kind={muted(kind.lower())} | reviver={reviver} | revived_at={success(revived_text)}"
             )
 
         def legacy_notifications(requester_id=None, requester_name=None, limit=10):
@@ -338,6 +346,7 @@ class ReviveRequestListener:
                     "requester_name": requester_name,
                     "target_id": int(target_id) if target_id is not None else None,
                     "target_name": target_name,
+                    "request_kind": str(payload.get("request_kind") or payload.get("kind") or "revive").strip().lower() or "revive",
                     "source": payload.get("source") or payload.get("function") or "external",
                     "status": "pending",
                     "fulfilled_revive_id": None,

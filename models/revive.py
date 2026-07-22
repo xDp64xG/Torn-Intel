@@ -45,6 +45,7 @@ class ReviveRequest(Model):
     requester_name = Text()
     target_id = Integer()
     target_name = Text()
+    request_kind = Text()
     source = Text()
     status = Text()
     fulfilled_revive_id = Integer()
