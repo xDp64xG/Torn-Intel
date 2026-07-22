@@ -80,3 +80,16 @@ class Settings:
         # Local revive request listener
         self.revive_listener_host = os.environ.get("TORN_REVIVE_LISTENER_HOST", "127.0.0.1")
         self.revive_listener_port = int(os.environ.get("TORN_REVIVE_LISTENER_PORT", "8765"))
+
+        # Discord bot bridge
+        self.discord_bot_token = os.environ.get("TORN_DISCORD_BOT_TOKEN", "").strip()
+        self.discord_command_prefix = os.environ.get("TORN_DISCORD_BOT_PREFIX", "!ti").strip() or "!ti"
+        guild_id_env = os.environ.get("TORN_DISCORD_GUILD_ID", "").strip()
+        self.discord_guild_id = int(guild_id_env) if guild_id_env else None
+        self.discord_command_timeout = int(os.environ.get("TORN_DISCORD_COMMAND_TIMEOUT", "180"))
+        self.discord_enable_message_content_intent = os.environ.get(
+            "TORN_DISCORD_ENABLE_MESSAGE_CONTENT_INTENT", "0"
+        ).strip().lower() in ("1", "true", "yes", "on")
+        revive_channel_env = os.environ.get("TORN_DISCORD_REVIVE_CHANNEL_ID", "").strip()
+        self.discord_revive_channel_id = int(revive_channel_env) if revive_channel_env else None
+        self.discord_revive_poll_seconds = int(os.environ.get("TORN_DISCORD_REVIVE_POLL_SECONDS", "20"))

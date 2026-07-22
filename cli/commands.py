@@ -100,6 +100,16 @@ class CLI:
                 window_seconds=getattr(args, 'window_seconds', 21600),
             )
 
+        elif args.command == "discord":
+
+            self.engine.manage_discord(
+                action=args.action,
+                token=getattr(args, 'token', None),
+                prefix=getattr(args, 'prefix', None),
+                guild_id=getattr(args, 'guild_id', None),
+                timeout_seconds=getattr(args, 'timeout_seconds', None),
+            )
+
         elif args.command == "payout":
 
             self.engine.payout(

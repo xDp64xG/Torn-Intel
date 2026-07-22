@@ -608,4 +608,44 @@ def build_parser():
     revive_listener.add_argument("--poll-seconds", dest="poll_seconds", type=int, default=15)
     revive_listener.add_argument("--window-seconds", dest="window_seconds", type=int, default=21600)
 
+    discord = sub.add_parser("discord")
+
+    discord.add_argument(
+        "action",
+        choices=["serve"],
+        help="serve: run the Discord bot bridge for TornIntel CLI commands."
+    )
+
+    discord.add_argument(
+        "--token",
+        dest="token",
+        type=str,
+        default=None,
+        help="Discord bot token. Defaults to TORN_DISCORD_BOT_TOKEN if omitted."
+    )
+
+    discord.add_argument(
+        "--prefix",
+        dest="prefix",
+        type=str,
+        default=None,
+        help="Message command prefix (default from TORN_DISCORD_BOT_PREFIX or !ti)."
+    )
+
+    discord.add_argument(
+        "--guild-id",
+        dest="guild_id",
+        type=int,
+        default=None,
+        help="Optional guild ID for faster slash command sync during setup."
+    )
+
+    discord.add_argument(
+        "--timeout-seconds",
+        dest="timeout_seconds",
+        type=int,
+        default=None,
+        help="Timeout for foreground command execution via Discord (default from env or 180)."
+    )
+
     return parser

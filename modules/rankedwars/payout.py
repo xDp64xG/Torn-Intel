@@ -6,6 +6,7 @@ Calculates fair payouts based on war hits, assists, and parameters.
 """
 
 import time
+from core.schema import SchemaBuilder
 from models.payout import Payout
 
 # Torn bonus milestones - these chain positions award extra respect
@@ -19,6 +20,11 @@ class WarPayoutCalculator:
         self.database = database
         self.logger = logger
         self.settings = settings
+
+        # Older DB files may not have the payouts table yet.
+        if not self.database.table_exists(Payout.table_name):
+            self.logger.info(f"Creating {Payout.table_name} table...")
+            SchemaBuilder(self.database, self.logger).create(Payout)
     
     def calculate_payouts(self, war_id, total_payout, xanax_cost, faction_cut_pct, 
                          bounty_cost=0, per_assist=0, pay_outside_hits=0):

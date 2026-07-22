@@ -7,6 +7,7 @@ Reads member respect values directly from Torn's war report CSV.
 
 import csv
 import time
+from core.schema import SchemaBuilder
 from models.payout import Payout
 
 
@@ -17,6 +18,11 @@ class CSVWarPayoutCalculator:
         self.database = database
         self.logger = logger
         self.settings = settings
+
+        # Older DB files may not have the payouts table yet.
+        if not self.database.table_exists(Payout.table_name):
+            self.logger.info(f"Creating {Payout.table_name} table...")
+            SchemaBuilder(self.database, self.logger).create(Payout)
     
     def parse_csv(self, csv_path):
         """

@@ -10,6 +10,12 @@ A Python CLI for pulling Torn faction data from the API and storing it in a loca
 pip install python-dotenv requests
 ```
 
+Optional Discord bridge:
+
+```bash
+pip install discord.py
+```
+
 ### 2. Configure API keys
 
 Copy `.env.example` to `.env` and add your API key(s):
@@ -33,6 +39,73 @@ This walks backward through all available attack history (~10 months) and saves 
 ---
 
 ## Commands
+
+### `discord` - Run TornIntel from Discord
+
+```
+python main.py discord serve [options]
+```
+
+This starts a Discord bot that executes the same CLI commands you already use.
+No duplicate command matrix is maintained - it shells out to `main.py` so parity
+with CLI stays automatic.
+
+It also includes a structured slash command for reports with autocomplete:
+- Recent `war_id` values
+- Recent `chain_id` values
+- Known item names
+- Known item categories
+
+Environment variables:
+
+```bash
+TORN_DISCORD_BOT_TOKEN=your_bot_token
+TORN_DISCORD_BOT_PREFIX=!ti
+TORN_DISCORD_GUILD_ID=123456789012345678
+TORN_DISCORD_COMMAND_TIMEOUT=180
+TORN_DISCORD_ENABLE_MESSAGE_CONTENT_INTENT=0
+TORN_DISCORD_REVIVE_CHANNEL_ID=
+TORN_DISCORD_REVIVE_POLL_SECONDS=20
+```
+
+Notes:
+- `TORN_DISCORD_ENABLE_MESSAGE_CONTENT_INTENT=0` (default) avoids privileged-intent errors and supports slash commands.
+- Set it to `1` only if you also enable **Message Content Intent** in the Discord Developer Portal and want `!ti` prefix commands.
+
+Run:
+
+```bash
+python main.py discord serve
+```
+
+Or override directly:
+
+```bash
+python main.py discord serve --token YOUR_TOKEN --prefix !ti --guild-id 123456789012345678
+```
+
+Discord commands:
+
+- Slash: `/ti` to run any CLI command string.
+- Slash: `/ti_report` for report-style commands with guided options + autocomplete (includes war_payout summary/top/full/csv/image controls).
+- Slash: `/ti_war_payout` guided payout command for ranked wars with optional summary/top/full views and CSV/PNG exports.
+- Slash: `/ti_revives` guided revives search command.
+- Slash: `/add` link your Discord user to your Torn player ID.
+- Slash: `/revive` and `/r` request a revive for a target Torn ID after hospital-status API validation.
+- Slash: `/ti_revive_active` list active revive requests.
+- Slash: `/ti_revive_cancel` cancel your pending revive request.
+- Slash: `/ti_revive_channel` set or view the active revive channel.
+- Prefix: `!ti <command>` to run any CLI command string.
+- Long-running jobs: `!ti_bg`, `!ti_jobs`, `!ti_stop`, `!ti_output` (slash equivalents included).
+
+Output formatting:
+
+- Responses are sent in Discord embeds.
+- Embed descriptions use `ansi` code blocks so your existing TornIntel color output remains readable in Discord clients that support ANSI rendering.
+- This aligns with Discord colored text generator style workflows while keeping Discord-native presentation.
+- Revive request embeds include Torn profile links for target/requester.
+- When a revive request is fulfilled, the posted request embed is auto-updated to green and shows the reviver name.
+- The Discord bot periodically runs `sync revives --mode live` + `revive_requests reconcile` while active Discord revive requests exist (interval controlled by `TORN_DISCORD_REVIVE_POLL_SECONDS`).
 
 ### `sync` — Import data from the API
 
@@ -395,6 +468,21 @@ python main.py payout rankedwars --war_id 43153 --total_payout 50000 \
 - Respect: earned from war hits only
 - Bonus: chain bonuses (capped at avg/hit)
 - %: player's share of total respect
+
+### Discord war payout output options
+
+`/ti_war_payout` supports explicit output views so you can choose what to post each run:
+
+- `view_summary` (default: true): sends payout math summary embed
+- `view_top` (default: true): sends top players table embed
+- `view_full` (default: false): sends full payout table (all players) in ANSI-colored embed chunks
+- `export_csv` (default: false): attaches full payout rows as CSV
+- `export_image` (default: false): attaches a PNG top-payout table image
+- `top_rows` (default: 20, range: 1-50): row count used by top embed views (image export now renders full payout rows)
+
+If all output toggles are off, command returns an error and asks you to enable at least one output type.
+
+The same output controls are available in `/ti_report` when using `module=rankedwars` and `report_type=war_payout`.
 - Payout: total player share (respect + assists + outside)
 
 ---

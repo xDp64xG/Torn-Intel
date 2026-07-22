@@ -249,3 +249,127 @@ def test_revive_request_notifications_mark_rows_notified():
     repo.mark_notified([rows[0]["request_id"]])
     rows_after = repo.get_unnotified_fulfilled(requester_id=999, limit=10)
     assert rows_after == []
+
+
+def test_revive_request_dedupes_across_sources_for_same_requester():
+    db = DummyDb()
+    logger = DummyLogger()
+    schema = SchemaBuilder(db, logger)
+    schema.create(Revive)
+    schema.create(ReviveRequest)
+
+    repo = ReviveRequestRepository(db)
+
+    first_id = repo.create_request(
+        {
+            "request_id": "req-source-a",
+            "requested_timestamp": 3000,
+            "created_at": 3001,
+            "requester_id": 999,
+            "requester_name": "Caller",
+            "target_id": 555,
+            "target_name": "Target",
+            "source": "discord-bot",
+            "status": "pending",
+            "fulfilled_revive_id": None,
+            "revived_timestamp": None,
+            "fulfilled_at": None,
+            "fulfilled_by_id": None,
+            "fulfilled_by_name": None,
+            "matched_at": None,
+            "notified_at": None,
+            "notes": None,
+            "raw_payload": None,
+        }
+    )
+
+    second_id = repo.create_request(
+        {
+            "request_id": "req-source-b",
+            "requested_timestamp": 3030,
+            "created_at": 3031,
+            "requester_id": 999,
+            "requester_name": "Caller",
+            "target_id": 555,
+            "target_name": "Target",
+            "source": "tampermonkey-local",
+            "status": "pending",
+            "fulfilled_revive_id": None,
+            "revived_timestamp": None,
+            "fulfilled_at": None,
+            "fulfilled_by_id": None,
+            "fulfilled_by_name": None,
+            "matched_at": None,
+            "notified_at": None,
+            "notes": None,
+            "raw_payload": None,
+        }
+    )
+
+    rows = repo.list_requests(status="all", limit=10)
+
+    assert first_id == "req-source-a"
+    assert second_id == "req-source-a"
+    assert len(rows) == 1
+
+
+def test_revive_request_does_not_dedupe_across_different_requesters():
+    db = DummyDb()
+    logger = DummyLogger()
+    schema = SchemaBuilder(db, logger)
+    schema.create(Revive)
+    schema.create(ReviveRequest)
+
+    repo = ReviveRequestRepository(db)
+
+    first_id = repo.create_request(
+        {
+            "request_id": "req-user-a",
+            "requested_timestamp": 4000,
+            "created_at": 4001,
+            "requester_id": 100,
+            "requester_name": "Caller A",
+            "target_id": 777,
+            "target_name": "Target",
+            "source": "discord-bot",
+            "status": "pending",
+            "fulfilled_revive_id": None,
+            "revived_timestamp": None,
+            "fulfilled_at": None,
+            "fulfilled_by_id": None,
+            "fulfilled_by_name": None,
+            "matched_at": None,
+            "notified_at": None,
+            "notes": None,
+            "raw_payload": None,
+        }
+    )
+
+    second_id = repo.create_request(
+        {
+            "request_id": "req-user-b",
+            "requested_timestamp": 4040,
+            "created_at": 4041,
+            "requester_id": 200,
+            "requester_name": "Caller B",
+            "target_id": 777,
+            "target_name": "Target",
+            "source": "tampermonkey-local",
+            "status": "pending",
+            "fulfilled_revive_id": None,
+            "revived_timestamp": None,
+            "fulfilled_at": None,
+            "fulfilled_by_id": None,
+            "fulfilled_by_name": None,
+            "matched_at": None,
+            "notified_at": None,
+            "notes": None,
+            "raw_payload": None,
+        }
+    )
+
+    rows = repo.list_requests(status="all", limit=10)
+
+    assert first_id == "req-user-a"
+    assert second_id == "req-user-b"
+    assert len(rows) == 2

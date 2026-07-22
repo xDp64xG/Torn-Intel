@@ -681,6 +681,35 @@ class TornIntel:
 
     #######################################################
 
+    def manage_discord(self, action, token=None, prefix=None, guild_id=None, timeout_seconds=None):
+
+        if action != "serve":
+            raise ValueError(f"Unknown discord action '{action}'")
+
+        from services.discord_bot_service import serve_discord_bot
+
+        effective_token = token or self.services.settings.discord_bot_token
+        if not effective_token:
+            raise ValueError("discord serve requires --token or TORN_DISCORD_BOT_TOKEN in environment")
+
+        effective_prefix = prefix or self.services.settings.discord_command_prefix
+        effective_guild_id = guild_id if guild_id is not None else self.services.settings.discord_guild_id
+        effective_timeout = (
+            int(timeout_seconds)
+            if timeout_seconds is not None
+            else int(self.services.settings.discord_command_timeout)
+        )
+
+        serve_discord_bot(
+            token=effective_token,
+            prefix=effective_prefix,
+            guild_id=effective_guild_id,
+            timeout_seconds=effective_timeout,
+            logger=self.services.logger,
+        )
+
+    #######################################################
+
     def manage_crime_rules(self, action, tier=None, crime_name=None, position=None, min_cpr=None):
 
         report = self.reports.get("crimes")

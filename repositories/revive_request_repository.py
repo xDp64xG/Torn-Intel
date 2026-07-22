@@ -223,7 +223,11 @@ class ReviveRequestRepository(Repository):
             target_id=values.get("target_id"),
             target_name=values.get("target_name"),
             source=values.get("source"),
+            requester_id=values.get("requester_id"),
+            requester_name=values.get("requester_name"),
             requested_timestamp=values.get("requested_timestamp"),
+            status="pending",
+            match_any_source=True,
         )
         if existing:
             return existing["request_id"]
@@ -292,40 +296,67 @@ class ReviveRequestRepository(Repository):
 
     ##########################################################
 
-    def find_recent_duplicate(self, target_id=None, target_name=None, source=None, requested_timestamp=None, window_seconds=120):
+    def find_recent_duplicate(
+        self,
+        target_id=None,
+        target_name=None,
+        source=None,
+        requester_id=None,
+        requester_name=None,
+        requested_timestamp=None,
+        window_seconds=120,
+        status="pending",
+        match_any_source=True,
+    ):
 
         requested_timestamp = int(requested_timestamp or 0)
         lower = requested_timestamp - int(window_seconds)
         upper = requested_timestamp + int(window_seconds)
 
+        base_filters = ["requested_timestamp BETWEEN ? AND ?"]
+        base_params = [lower, upper]
+
+        if status:
+            base_filters.append("status = ?")
+            base_params.append(str(status))
+
+        if not match_any_source:
+            base_filters.append("source = ?")
+            base_params.append(str(source or "external"))
+
+        if requester_id is not None:
+            base_filters.append("requester_id = ?")
+            base_params.append(int(requester_id))
+        elif requester_name:
+            base_filters.append("LOWER(requester_name) = LOWER(?)")
+            base_params.append(str(requester_name))
+
         if target_id is not None:
+            where_clause = " AND ".join(["target_id = ?", *base_filters])
             rows = self.db.select(
-                """
+                f"""
                 SELECT *
                 FROM revive_requests
-                WHERE target_id = ?
-                  AND source = ?
-                  AND requested_timestamp BETWEEN ? AND ?
+                WHERE {where_clause}
                 ORDER BY requested_timestamp DESC, created_at DESC
                 LIMIT 1
                 """,
-                (int(target_id), str(source or "external"), lower, upper),
+                (int(target_id), *base_params),
             )
             if rows:
                 return rows[0]
 
         if target_name:
+            where_clause = " AND ".join(["LOWER(target_name) = LOWER(?)", *base_filters])
             rows = self.db.select(
-                """
+                f"""
                 SELECT *
                 FROM revive_requests
-                WHERE LOWER(target_name) = LOWER(?)
-                  AND source = ?
-                  AND requested_timestamp BETWEEN ? AND ?
+                WHERE {where_clause}
                 ORDER BY requested_timestamp DESC, created_at DESC
                 LIMIT 1
                 """,
-                (str(target_name), str(source or "external"), lower, upper),
+                (str(target_name), *base_params),
             )
             if rows:
                 return rows[0]
