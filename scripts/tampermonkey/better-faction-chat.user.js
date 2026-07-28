@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Faction Chat – Torn.com (Desktop + Torn PDA)
 // @namespace    https://torn.com/
-// @version      1.6.3
+// @version      1.6.4
 // @description  Desktop and Torn PDA faction chat tools: status, group tags, officer groups, search, timestamps and touch-friendly controls
 // @author       sercann
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
     'use strict';
 
-    const BFC_VERSION = '1.6.2';
+    const BFC_VERSION = '1.6.4';
     const STORE_KEY   = 'bfc_settings_v2';
     const API_BASE    = 'https://api.torn.com';
     const IS_TOUCH    = matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0;
