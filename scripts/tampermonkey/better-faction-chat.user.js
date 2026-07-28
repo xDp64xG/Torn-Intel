@@ -233,7 +233,7 @@
 
         #bfc-torn-restore-btn { display:block; width:100%; margin-top:10px; padding:7px 10px; background:#1a2535; border:1px solid ${CFG.accentColor}66; border-radius:4px; color:${CFG.accentColor}; font-size:12px; font-weight:600; cursor:pointer; text-align:center; box-sizing:border-box; transition:background .15s,border-color .15s; }
         #bfc-torn-restore-btn:hover { background:#1e3050; border-color:${CFG.accentColor}; }
-        #bfc-tag-popup { position:fixed; z-index:9999999; min-width:220px; background:#0d1117; border:1px solid #30363d; border-radius:8px; box-shadow:0 8px 28px rgba(0,0,0,.75); padding:5px; display:none; font-family:'Segoe UI',sans-serif; }
+        #bfc-tag-popup { position:fixed; z-index:9999999; min-width:220px; max-width:min(360px, calc(100vw - 16px)); max-height:min(52vh, 440px); overflow-y:auto; overscroll-behavior:contain; -webkit-overflow-scrolling:touch; background:#0d1117; border:1px solid #30363d; border-radius:8px; box-shadow:0 8px 28px rgba(0,0,0,.75); padding:5px; display:none; font-family:'Segoe UI',sans-serif; }
         #bfc-tag-popup.bfc-open { display:block; }
         .bfc-tag-item { width:100%; display:flex; align-items:center; gap:8px; background:transparent; border:0; color:#cdd9e5; padding:7px 9px; border-radius:5px; cursor:pointer; text-align:left; font-size:12px; }
         .bfc-tag-item:hover { background:rgba(41,182,246,.16); color:#fff; }
@@ -255,7 +255,7 @@
             #bfc-toolbar .bfc-tb-group { flex-wrap:wrap; }
             .bfc-tb-btn { min-height:36px; padding:7px 10px; font-size:12px; touch-action:manipulation; }
             #bfc-status-pill { min-height:30px; display:inline-flex; align-items:center; }
-            #bfc-tag-popup { left:8px!important; right:8px!important; width:auto!important; min-width:0; max-height:55vh; overflow-y:auto; -webkit-overflow-scrolling:touch; }
+            #bfc-tag-popup { min-width:220px; max-width:min(320px, calc(100vw - 16px)); max-height:min(40vh, 320px); }
             .bfc-tag-item { min-height:44px; padding:10px 12px; font-size:14px; touch-action:manipulation; }
             #bfc-member-popup { left:8px!important; right:8px!important; width:auto; max-height:58vh; -webkit-overflow-scrolling:touch; }
             .bfc-mp-item { min-height:38px; padding:7px 12px; }
@@ -867,20 +867,36 @@
             insertTextIntoChat(names.map(n => '@' + n).join(' '));
             tagPopup.classList.remove('bfc-open');
         }));
+
+        tagPopup.style.left = '-9999px';
+        tagPopup.style.top = '-9999px';
+        tagPopup.style.right = 'auto';
+        tagPopup.style.bottom = 'auto';
         const r = anchor.getBoundingClientRect();
-        if (IS_TORN_PDA) {
-            tagPopup.style.left = '8px';
-            tagPopup.style.right = '8px';
-            tagPopup.style.top = 'auto';
-            tagPopup.style.bottom = Math.max(8, window.innerHeight - r.top + 6) + 'px';
-        } else {
-            tagPopup.style.right = 'auto';
-            tagPopup.style.bottom = 'auto';
-            tagPopup.style.left = Math.max(4, Math.min(r.left, window.innerWidth - 230)) + 'px';
-            tagPopup.style.top = Math.max(4, r.top - tagPopup.offsetHeight - 6) + 'px';
-        }
+
         tagPopup.classList.add('bfc-open');
-        if (!IS_TORN_PDA) requestAnimationFrame(() => { tagPopup.style.top = Math.max(4, r.top - tagPopup.offsetHeight - 6) + 'px'; });
+
+        requestAnimationFrame(() => {
+            const popupW = tagPopup.offsetWidth || 260;
+            const popupH = tagPopup.offsetHeight || 220;
+            const margin = 8;
+
+            const centeredLeft = r.left + (r.width / 2) - (popupW / 2);
+            const left = Math.max(margin, Math.min(centeredLeft, window.innerWidth - popupW - margin));
+
+            const spaceAbove = r.top - margin;
+            const spaceBelow = window.innerHeight - r.bottom - margin;
+
+            let top;
+            if (spaceAbove >= popupH || spaceAbove >= spaceBelow) {
+                top = Math.max(margin, r.top - popupH - 6);
+            } else {
+                top = Math.min(window.innerHeight - popupH - margin, r.bottom + 6);
+            }
+
+            tagPopup.style.left = `${Math.round(left)}px`;
+            tagPopup.style.top = `${Math.round(top)}px`;
+        });
     }
 
     let toolbar = null, statusPill = null, autoScrollOn = CFG.autoScroll;
