@@ -490,7 +490,7 @@
     const CORE_GROUP_TAGS = {
         everyone: { label: 'Everyone', icon: '📣', test: () => true },
         online: { label: 'Online', icon: '🟢', test: m => m.status === 'online' },
-        leaders: { label: 'Leaders', icon: '👑', test: m => /^(leader|co[- ]?leader)$/i.test(m.position || '') },
+        leaders: { label: 'Leaders', icon: '👑', test: m => isLeaderPosition(m.position) },
         officers: { label: 'Officers', icon: '⭐', test: m => (CFG.officerIds || []).includes(String(m.id)) },
         traveling: { label: 'Traveling', icon: '✈️', test: m => m.state === 'traveling' || m.state === 'abroad' },
         hospital: { label: 'Hospital', icon: '🏥', test: m => m.state === 'hospital' },
@@ -517,7 +517,13 @@
             .trim()
             .toLowerCase()
             .replace(/[_-]+/g, ' ')
+            .replace(/[^a-z0-9\s]+/g, ' ')
             .replace(/\s+/g, ' ');
+    }
+
+    function isLeaderPosition(position) {
+        const normalized = normalizePosition(position);
+        return normalized === 'leader' || normalized === 'co leader' || normalized === 'coleader';
     }
 
     function positionTagKey(position) {
@@ -589,7 +595,6 @@
         return Object.values(memberCache)
             .filter(group.test)
             .map(m => m.name)
-            .filter(memberName => !CFG.username || memberName.toLowerCase() !== CFG.username.toLowerCase())
             .sort((a, b) => a.localeCompare(b));
     }
 
