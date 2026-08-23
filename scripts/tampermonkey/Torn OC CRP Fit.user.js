@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OC CRP Fit
 // @namespace    http://tampermonkey.net/
-// @version      1.2
+// @version      1.3
 // @description  Highlights the organised crime slots that best fit your CPR, using the faction CRP/weight table.
 // @match        https://www.torn.com/factions.php?step=your&type=1*
 // @grant        GM_registerMenuCommand
@@ -29,6 +29,7 @@
   const CRIME_LIST = '#faction-crimes-root';
   const OVERLAY_ID = 'crp-overlay';
   const RESCAN_MS = 1200;
+  const MAX_SCAN_GAP_MS = 4000;
 
   let table = null;
   let crimesByName = new Map();
@@ -226,6 +227,12 @@
     return manualCpr || null;
   }
 
+  function crimeLevel(card, crime) {
+    const el = card.querySelector('[class*="levelValue"]');
+    const match = el && el.textContent.match(/(\d{1,2})/);
+    return match ? parseInt(match[1], 10) : crime.tier;
+  }
+
   function collectSlots() {
     const results = [];
 
@@ -238,6 +245,7 @@
       const { card, crime } = match;
       if (!isRecruiting(card)) return;
 
+      const level = crimeLevel(card, crime);
       const used = new Map();
       Array.from(row.children).forEach(slot => {
         const key = positionOf(slot, crime);
@@ -248,7 +256,7 @@
         const role = crime.rolesByBase.get(key)[index];
         if (!role || !isEmptySlot(slot)) return;
 
-        results.push({ crime, role, slot, cpr: readCpr(slot) });
+        results.push({ crime, role, slot, level, cpr: readCpr(slot) });
       });
     });
 
@@ -301,6 +309,8 @@
   }
 
   function scan() {
+    lastScan = Date.now();
+    clearTimeout(timer);
     if (!table || !isOcPage()) {
       clearMarks();
       const panel = document.getElementById('crp-panel');
@@ -308,15 +318,20 @@
       return;
     }
 
-    const evaluated = collectSlots().map(entry => {
-      const eligible = entry.cpr !== null && entry.cpr >= entry.role.min_cpr;
-      return Object.assign(entry, {
-        eligible,
-        score: eligible ? entry.role.weight * (entry.cpr / 100) : -1
-      });
-    });
+    const evaluated = collectSlots().map(entry =>
+      Object.assign(entry, {
+        eligible: entry.cpr !== null && entry.cpr >= entry.role.min_cpr
+      })
+    );
 
-    evaluated.sort((a, b) => b.score - a.score);
+    // Highest crime level first, then the heaviest position you still qualify for.
+    evaluated.sort(
+      (a, b) =>
+        b.eligible - a.eligible ||
+        b.level - a.level ||
+        b.role.weight - a.role.weight ||
+        b.cpr - a.cpr
+    );
     const best = evaluated.filter(e => e.eligible).slice(0, 3);
 
     highlights = evaluated.map(entry => ({
@@ -346,7 +361,7 @@
     const items = best
       .map(
         e =>
-          `<li><b>${e.crime.name}</b> — ${e.role.position}<br>` +
+          `<li><b>${e.crime.name}</b> (L${e.level}) — ${e.role.position}<br>` +
           `<span class="crp-muted">your ${e.cpr} / need ${e.role.min_cpr} · weight ${(e.role.weight * 100).toFixed(1)}%</span></li>`
       )
       .join('');
@@ -366,7 +381,15 @@
   }
 
   let timer = null;
+  let lastScan = 0;
+
+  // Torn's countdown timers mutate the page every second, so a pure debounce would
+  // never settle; force a scan once MAX_SCAN_GAP_MS has passed.
   function schedule() {
+    if (Date.now() - lastScan > MAX_SCAN_GAP_MS) {
+      scan();
+      return;
+    }
     clearTimeout(timer);
     timer = setTimeout(scan, RESCAN_MS);
   }
