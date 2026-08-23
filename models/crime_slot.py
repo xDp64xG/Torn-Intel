@@ -89,6 +89,10 @@ class CrimeMember(Model):
 
     is_in_oc = Integer()
 
+    status_state = Text()
+
+    status_description = Text()
+
     last_action = Integer()
 
     updated_at = Integer()
@@ -131,6 +135,92 @@ class CrimeSlotHistory(Model):
     required_item_name = Text()
 
     updated_at = Integer()
+
+    def __init__(self, **kwargs):
+
+        for field in self.column_names():
+
+            setattr(
+                self,
+                field,
+                kwargs.get(field)
+            )
+
+
+class CrimeDelayEvent(Model):
+
+    table_name = "crime_delay_events"
+
+    delay_id = Integer(primary=True)
+
+    crime_id = Integer()
+
+    crime_name = Text()
+
+    difficulty = Integer()
+
+    status = Text()
+
+    started_at = Integer()
+
+    last_seen_at = Integer()
+
+    resolved_at = Integer()
+
+    duration_seconds = Integer()
+
+    resolution = Text()
+
+    delaying_user_ids = Text()
+
+    delaying_user_names = Text()
+
+    delaying_states = Text()
+
+    def __init__(self, **kwargs):
+
+        for field in self.column_names():
+
+            setattr(
+                self,
+                field,
+                kwargs.get(field)
+            )
+
+
+class CrimeDelayNotification(Model):
+
+    table_name = "crime_delay_notifications"
+
+    notification_id = Integer(primary=True)
+
+    event_type = Text()
+
+    delay_id = Integer()
+
+    crime_id = Integer()
+
+    crime_name = Text()
+
+    difficulty = Integer()
+
+    started_at = Integer()
+
+    resolved_at = Integer()
+
+    duration_seconds = Integer()
+
+    delaying_user_ids = Text()
+
+    delaying_user_names = Text()
+
+    delaying_states = Text()
+
+    resolution = Text()
+
+    created_at = Integer()
+
+    discord_posted_at = Integer()
 
     def __init__(self, **kwargs):
 

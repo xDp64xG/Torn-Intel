@@ -43,7 +43,7 @@ REPORT_TYPES_BY_MODULE = {
     "chains": ["chain_hit", "chain_stats", "chain_leaderboard", "chain_player"],
     "rankedwars": ["war_stats", "war_leaderboard", "war_player", "war_payout", "war_costs", "chain_costs"],
     "armoury": ["player_usage", "category", "medical_summary", "loan_tracker"],
-    "crimes": ["oc_item_audit", "oc_cpr", "oc_outside"],
+    "crimes": ["oc_item_audit", "oc_cpr", "oc_outside", "oc_delays"],
     "revives": ["requests_list"],
 }
 
@@ -293,6 +293,29 @@ class ReviveDiscordStore:
             if "discord_posted_at" not in names:
                 conn.execute("ALTER TABLE revive_request_notifications ADD COLUMN discord_posted_at INTEGER")
                 conn.commit()
+
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS crime_delay_notifications (
+                    notification_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_type TEXT NOT NULL,
+                    delay_id INTEGER,
+                    crime_id INTEGER,
+                    crime_name TEXT,
+                    difficulty INTEGER,
+                    started_at INTEGER,
+                    resolved_at INTEGER,
+                    duration_seconds INTEGER,
+                    delaying_user_ids TEXT,
+                    delaying_user_names TEXT,
+                    delaying_states TEXT,
+                    resolution TEXT,
+                    created_at INTEGER NOT NULL,
+                    discord_posted_at INTEGER
+                )
+                """
+            )
+            conn.commit()
         finally:
             conn.close()
 
@@ -630,6 +653,42 @@ class ReviveDiscordStore:
                 UPDATE revive_request_notifications
                 SET discord_posted_at = ?,
                     payload = COALESCE(payload, payload)
+                WHERE notification_id = ?
+                """,
+                (int(time.time()), int(notification_id)),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    #######################################################
+
+    def list_unposted_crime_delay_notifications(self, limit: int = 50):
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM crime_delay_notifications
+                WHERE COALESCE(discord_posted_at, 0) = 0
+                ORDER BY created_at ASC, notification_id ASC
+                LIMIT ?
+                """,
+                (int(limit),),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    #######################################################
+
+    def mark_crime_delay_notification_discord_posted(self, notification_id: int):
+        conn = self._connect()
+        try:
+            conn.execute(
+                """
+                UPDATE crime_delay_notifications
+                SET discord_posted_at = ?
                 WHERE notification_id = ?
                 """,
                 (int(time.time()), int(notification_id)),
@@ -1024,6 +1083,7 @@ def serve_discord_bot(token: str, prefix: str = "!ti", guild_id: int | None = No
     allow_prefix_commands = bool(settings.discord_enable_message_content_intent)
     revive_watcher_task = None
     revive_request_alert_task = None
+    oc_delay_alert_task = None
 
     def embed_color(ok: bool):
         return 0x2ecc71 if ok else 0xe74c3c
@@ -1049,8 +1109,29 @@ def serve_discord_bot(token: str, prefix: str = "!ti", guild_id: int | None = No
             return int(settings.discord_revive_channel_id)
         return int(default_channel_id) if default_channel_id is not None else None
 
+    def resolve_oc_delay_channel_id(default_channel_id: int | None = None):
+        configured = revive_store.get_setting("oc_delay_channel_id")
+        if configured and str(configured).isdigit():
+            return int(configured)
+        if settings.discord_oc_delay_channel_id:
+            return int(settings.discord_oc_delay_channel_id)
+        return int(default_channel_id) if default_channel_id is not None else None
+
     async def resolve_revive_channel(interaction: discord.Interaction):
         channel_id = resolve_revive_channel_id(interaction.channel_id)
+        if channel_id is None:
+            return interaction.channel
+
+        channel = bot.get_channel(channel_id)
+        if channel is None:
+            try:
+                channel = await bot.fetch_channel(channel_id)
+            except Exception:
+                channel = interaction.channel
+        return channel
+
+    async def resolve_oc_delay_channel(interaction: discord.Interaction):
+        channel_id = resolve_oc_delay_channel_id(interaction.channel_id)
         if channel_id is None:
             return interaction.channel
 
@@ -1217,6 +1298,62 @@ def serve_discord_bot(token: str, prefix: str = "!ti", guild_id: int | None = No
             embed.set_footer(text=f"Use /ti_revive_cancel <request_id> to cancel while pending")
 
         return embed
+
+    def build_oc_delay_embed(row):
+        event_type = str(row.get("event_type") or "crime_delay_started").strip().lower()
+        started_at = int(row.get("started_at") or 0)
+        resolved_at = int(row.get("resolved_at") or 0) if row.get("resolved_at") is not None else None
+        duration_seconds = int(row.get("duration_seconds") or 0)
+        crime_id = int(row.get("crime_id") or 0)
+        crime_name = str(row.get("crime_name") or "Unknown Crime")
+        difficulty = int(row.get("difficulty") or 0)
+        flyers = str(row.get("delaying_user_names") or "Unknown")
+        travel_text = str(row.get("delaying_states") or "Traveling")
+        resolution = str(row.get("resolution") or "inactive")
+
+        if event_type == "crime_delay_resolved":
+            title = "OC Delay Resolved"
+            color = 0x2ecc71 if resolution == "completed" else 0x3498db
+            description = (
+                f"**{crime_name}** [{crime_id}] is no longer blocked by a flying member.\n"
+                f"Total delay: **{format_duration_brief(duration_seconds)}**"
+            )
+        else:
+            title = "OC Delay Started"
+            color = 0xe67e22
+            description = (
+                f"**{crime_name}** [{crime_id}] is currently blocked by a flying member.\n"
+                f"Delay running since **{format_ts_short(started_at)}**"
+            )
+
+        embed = discord.Embed(title=title, description=description, color=color)
+        embed.add_field(name="Tier", value=str(difficulty), inline=True)
+        embed.add_field(name="Flyers", value=flyers, inline=False)
+        embed.add_field(name="Travel State", value=travel_text, inline=False)
+
+        if started_at:
+            embed.add_field(name="Started", value=format_ts_short(started_at), inline=True)
+        if resolved_at:
+            embed.add_field(name="Resolved", value=format_ts_short(resolved_at), inline=True)
+        if event_type == "crime_delay_resolved":
+            embed.add_field(name="Resolution", value=resolution, inline=True)
+
+        embed.set_footer(text="Generated from TornIntel OC live sync snapshots")
+        return embed
+
+    def format_duration_brief(total_seconds: int):
+        seconds = max(0, int(total_seconds or 0))
+        hours, rem = divmod(seconds, 3600)
+        minutes, secs = divmod(rem, 60)
+        if hours > 0:
+            return f"{hours}h {minutes}m"
+        if minutes > 0:
+            return f"{minutes}m {secs}s"
+        return f"{secs}s"
+
+    def format_ts_short(timestamp_value: int):
+        ts = int(timestamp_value or 0)
+        return datetime.fromtimestamp(ts).strftime("%m-%d %H:%M") if ts > 0 else "-"
 
     async def run_and_respond(target_send, command_text: str, background: bool = False, timeout_override: int | None = None):
         if background:
@@ -1880,6 +2017,68 @@ def serve_discord_bot(token: str, prefix: str = "!ti", guild_id: int | None = No
 
             await asyncio.sleep(poll_seconds)
 
+    async def oc_delay_alert_watcher():
+        poll_seconds = max(20, int(getattr(settings, "discord_oc_delay_poll_seconds", 60) or 60))
+        last_sync_at = 0.0
+
+        while not bot.is_closed():
+            try:
+                now = time.time()
+                if (now - last_sync_at) >= poll_seconds:
+                    sync_result = bridge.run_foreground(
+                        "sync crimes --mode live",
+                        timeout_seconds=max(120, int(timeout_seconds or 180)),
+                    )
+                    if not sync_result.get("ok") and logger:
+                        logger.warning(
+                            f"Discord OC delay watcher sync failed (exit {sync_result.get('returncode')}): "
+                            f"{str(sync_result.get('output') or '').splitlines()[-1] if sync_result.get('output') else 'no output'}"
+                        )
+                    last_sync_at = time.time()
+
+                rows = revive_store.list_unposted_crime_delay_notifications(limit=50)
+                if not rows:
+                    await asyncio.sleep(poll_seconds)
+                    continue
+
+                channel_id = resolve_oc_delay_channel_id()
+                if channel_id is None:
+                    if logger:
+                        logger.warning("OC delay watcher skipped: no OC delay channel configured")
+                    await asyncio.sleep(poll_seconds)
+                    continue
+
+                channel = bot.get_channel(int(channel_id))
+                if channel is None:
+                    try:
+                        channel = await bot.fetch_channel(int(channel_id))
+                    except Exception as exc:
+                        if logger:
+                            logger.warning(f"OC delay watcher could not fetch channel {channel_id}: {type(exc).__name__}: {exc}")
+                        await asyncio.sleep(poll_seconds)
+                        continue
+
+                for row in rows:
+                    try:
+                        embed = build_oc_delay_embed(row)
+                        await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+                        revive_store.mark_crime_delay_notification_discord_posted(int(row["notification_id"]))
+                        if logger:
+                            logger.info(
+                                f"Posted OC delay alert {row.get('event_type')} for crime {row.get('crime_id')} to channel {channel_id}"
+                            )
+                    except Exception as exc:
+                        if logger:
+                            logger.warning(
+                                f"Failed to post OC delay alert for crime {row.get('crime_id')}: {type(exc).__name__}: {exc}"
+                            )
+                await asyncio.sleep(1)
+            except Exception as exc:
+                if logger:
+                    logger.warning(f"OC delay watcher error: {type(exc).__name__}: {exc}")
+
+            await asyncio.sleep(poll_seconds)
+
     async def report_type_autocomplete(interaction, current: str):
         module = str(getattr(interaction.namespace, "module", "") or "")
         types = REPORT_TYPES_BY_MODULE.get(module, [])
@@ -1905,7 +2104,7 @@ def serve_discord_bot(token: str, prefix: str = "!ti", guild_id: int | None = No
 
     @bot.event
     async def on_ready():
-        nonlocal revive_watcher_task, revive_request_alert_task
+        nonlocal revive_watcher_task, revive_request_alert_task, oc_delay_alert_task
         if logger:
             logger.success(f"Discord bot logged in as {bot.user}")
             try:
@@ -1958,6 +2157,11 @@ def serve_discord_bot(token: str, prefix: str = "!ti", guild_id: int | None = No
             revive_request_alert_task = asyncio.create_task(revive_request_alert_watcher())
             if logger:
                 logger.info("Started revive request alert watcher task")
+
+        if oc_delay_alert_task is None or oc_delay_alert_task.done():
+            oc_delay_alert_task = asyncio.create_task(oc_delay_alert_watcher())
+            if logger:
+                logger.info("Started OC delay alert watcher task")
 
     if allow_prefix_commands:
         @bot.command(name="ti")
@@ -2263,6 +2467,97 @@ def serve_discord_bot(token: str, prefix: str = "!ti", guild_id: int | None = No
                 interaction.followup.send,
                 title="Revive Channel",
                 text="No explicit revive channel set. Requests post in the command channel.",
+                ok=True,
+            )
+
+    @bot.tree.command(name="ti_oc_delay_channel", description="View or set the channel used for OC delay alerts")
+    @app_commands.describe(channel_ref="Optional channel ID or mention, e.g. 123... or <#123...>")
+    async def ti_oc_delay_channel_slash(interaction: discord.Interaction, channel_ref: str | None = None):
+        await interaction.response.defer(thinking=False)
+        if channel_ref is not None:
+            if interaction.guild is None:
+                await send_embed_chunks(
+                    interaction.followup.send,
+                    title="OC Delay Channel Update Failed",
+                    text="Run this command in a server channel (not DM).",
+                    ok=False,
+                )
+                return
+
+            member = interaction.guild.get_member(interaction.user.id)
+            interaction_perms = getattr(interaction, "permissions", None)
+            has_manage = False
+
+            if interaction_perms is not None:
+                has_manage = bool(
+                    getattr(interaction_perms, "administrator", False)
+                    or getattr(interaction_perms, "manage_guild", False)
+                    or getattr(interaction_perms, "manage_channels", False)
+                )
+
+            if not has_manage and member is not None:
+                guild_perms = member.guild_permissions
+                has_manage = bool(
+                    getattr(guild_perms, "administrator", False)
+                    or getattr(guild_perms, "manage_guild", False)
+                    or getattr(guild_perms, "manage_channels", False)
+                )
+
+            if not has_manage:
+                await send_embed_chunks(
+                    interaction.followup.send,
+                    title="OC Delay Channel Update Failed",
+                    text="You need Manage Channels (or Administrator/Manage Server) permission to set the OC delay channel.",
+                    ok=False,
+                )
+                return
+
+            parsed_channel_id = _parse_channel_id(channel_ref)
+            if parsed_channel_id is None:
+                await send_embed_chunks(
+                    interaction.followup.send,
+                    title="OC Delay Channel Update Failed",
+                    text="Use a channel ID like 123456789012345678 or a mention like <#123456789012345678>.",
+                    ok=False,
+                )
+                return
+
+            try:
+                target_channel = bot.get_channel(int(parsed_channel_id)) or await bot.fetch_channel(int(parsed_channel_id))
+            except Exception:
+                target_channel = None
+
+            if target_channel is None:
+                await send_embed_chunks(
+                    interaction.followup.send,
+                    title="OC Delay Channel Update Failed",
+                    text="Invalid channel ID or channel is not accessible by the bot.",
+                    ok=False,
+                )
+                return
+
+            revive_store.set_setting("oc_delay_channel_id", str(int(parsed_channel_id)))
+            await send_embed_chunks(
+                interaction.followup.send,
+                title="OC Delay Channel Updated",
+                text=f"OC delay alerts will now post in <#{int(parsed_channel_id)}>.",
+                ok=True,
+            )
+            return
+
+        current = resolve_oc_delay_channel_id(interaction.channel_id)
+        if current:
+            await send_embed_chunks(
+                interaction.followup.send,
+                title="OC Delay Channel",
+                text=f"Current OC delay channel: <#{current}>",
+                ok=True,
+            )
+        else:
+            await send_embed_chunks(
+                interaction.followup.send,
+                title="OC Delay Channel",
+                text="No explicit OC delay channel set. Alerts are disabled until a channel is configured.",
                 ok=True,
             )
 

@@ -248,6 +248,16 @@ class CrimeQueries:
 
     #######################################################
 
+    def active_delay_events(self, limit=50):
+        return [dict(r) for r in self.repo.active_delay_events(limit=limit)]
+
+    #######################################################
+
+    def resolved_delay_events(self, limit=50):
+        return [dict(r) for r in self.repo.resolved_delay_events(limit=limit)]
+
+    #######################################################
+
     def _historical_positions_for_player(self, player_name, limit=50):
         rows = self.repo.player_history(player_name=player_name, limit=limit)
 

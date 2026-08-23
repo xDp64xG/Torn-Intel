@@ -568,13 +568,17 @@ class TornIntel:
             output = report.outside_members_report(limit=kwargs.get("limit", 200))
             print(output)
 
+        elif report_type == "oc_delays":
+            output = report.delay_report(limit=kwargs.get("limit", 50))
+            print(output)
+
         else:
             raise ValueError(
                 f"Unknown report type '{report_type}'. "
                 "Available: chain_hit, chain_stats, chain_leaderboard, chain_player, "
                 "war_stats, war_leaderboard, war_player, war_payout, "
                 "war_costs, chain_costs, player_usage, category, medical_summary, loan_tracker, "
-                "oc_item_audit, oc_cpr, oc_outside"
+                "oc_item_audit, oc_cpr, oc_outside, oc_delays"
             )
 
     #######################################################

@@ -93,3 +93,6 @@ class Settings:
         revive_channel_env = os.environ.get("TORN_DISCORD_REVIVE_CHANNEL_ID", "").strip()
         self.discord_revive_channel_id = int(revive_channel_env) if revive_channel_env else None
         self.discord_revive_poll_seconds = int(os.environ.get("TORN_DISCORD_REVIVE_POLL_SECONDS", "20"))
+        oc_delay_channel_env = os.environ.get("TORN_DISCORD_OC_DELAY_CHANNEL_ID", "").strip()
+        self.discord_oc_delay_channel_id = int(oc_delay_channel_env) if oc_delay_channel_env else None
+        self.discord_oc_delay_poll_seconds = int(os.environ.get("TORN_DISCORD_OC_DELAY_POLL_SECONDS", "60"))

@@ -6,6 +6,7 @@ OC reports:
 - oc_cpr: CPR baseline and threshold checks.
 """
 
+from datetime import datetime
 from pathlib import Path
 import json
 from utils.colors import success, warning, error, info, header, muted, highlight
@@ -538,6 +539,63 @@ class CrimeReport:
 
     #########################################################
 
+    def delay_report(self, limit=25):
+
+        active = self.queries.active_delay_events(limit=max(1, int(limit)))
+        resolved = self.queries.resolved_delay_events(limit=max(1, int(limit)))
+
+        lines = []
+        lines.append(f"\n{header('========== OC FLYING DELAYS ==========')}")
+        lines.append("Tracks overdue planning crimes still blocked by assigned members who are traveling/abroad")
+        lines.append(f"Active delays: {warning(str(len(active)))}")
+        lines.append(f"Recent resolved delays: {info(str(len(resolved)))}")
+        lines.append(muted("--------------------------------------"))
+
+        lines.append(f"\n{warning('ACTIVE FLYING DELAYS')}")
+        if active:
+            for row in active:
+                started_at = int(row.get("started_at") or 0)
+                started_text = self._fmt_ts(started_at)
+                duration_text = self._format_duration(max(0, int(row.get("duration_seconds") or 0)))
+                crime_name = row.get("crime_name") or "Unknown Crime"
+                crime_id = int(row.get("crime_id") or 0)
+                difficulty = int(row.get("difficulty") or 0)
+                flyers = row.get("delaying_user_names") or "Unknown"
+                states = row.get("delaying_states") or "Traveling"
+                status = str(row.get("status") or "planning").strip().lower()
+                status_text = warning(status)
+                lines.append(
+                    f"- {highlight(crime_name)} [{crime_id}] | tier {difficulty} | status {status_text} | delayed {error(duration_text)} since {started_text}"
+                )
+                lines.append(f"  flyers: {flyers}")
+                lines.append(f"  travel: {muted(states)}")
+        else:
+            lines.append(muted("- none"))
+
+        lines.append(f"\n{success('RECENT RESOLVED DELAYS')}")
+        if resolved:
+            for row in resolved:
+                started_at = int(row.get("started_at") or 0)
+                resolved_at = int(row.get("resolved_at") or 0)
+                duration_text = self._format_duration(max(0, int(row.get("duration_seconds") or 0)))
+                crime_name = row.get("crime_name") or "Unknown Crime"
+                crime_id = int(row.get("crime_id") or 0)
+                difficulty = int(row.get("difficulty") or 0)
+                flyers = row.get("delaying_user_names") or "Unknown"
+                resolution = self._format_delay_resolution(row.get("resolution"))
+                lines.append(
+                    f"- {highlight(crime_name)} [{crime_id}] | tier {difficulty} | delay {success(duration_text)} | {resolution} | {self._fmt_ts(started_at)} -> {self._fmt_ts(resolved_at)}"
+                )
+                lines.append(f"  flyers: {flyers}")
+        else:
+            lines.append(muted("- none tracked yet"))
+
+        lines.append(muted("Tip: run `python main.py watch crimes --cooldown 60` to keep delay timing accurate over time."))
+        lines.append(header("======================================\n"))
+        return "\n".join(lines)
+
+    #########################################################
+
     def outside_members_report(self, limit=200):
 
         outside = self.queries.members_outside_crimes()
@@ -643,3 +701,34 @@ class CrimeReport:
         lines.append(header("===================================\n"))
 
         return "\n".join(lines)
+
+    #########################################################
+
+    def _format_duration(self, total_seconds):
+        seconds = max(0, int(total_seconds or 0))
+        hours, rem = divmod(seconds, 3600)
+        minutes, secs = divmod(rem, 60)
+
+        if hours > 0:
+            return f"{hours}h {minutes}m"
+        if minutes > 0:
+            return f"{minutes}m {secs}s"
+        return f"{secs}s"
+
+    #########################################################
+
+    def _fmt_ts(self, timestamp):
+        ts = int(timestamp or 0)
+        if ts <= 0:
+            return "-"
+        return datetime.fromtimestamp(ts).strftime("%m-%d %H:%M")
+
+    #########################################################
+
+    def _format_delay_resolution(self, resolution):
+        text = str(resolution or "inactive").strip().lower()
+        if text == "completed":
+            return success("completed")
+        if text == "cleared":
+            return info("cleared")
+        return muted(text)

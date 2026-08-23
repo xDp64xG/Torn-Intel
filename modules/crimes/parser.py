@@ -131,6 +131,10 @@ class CrimeParser:
             if user_id <= 0:
                 continue
 
+            status_payload = payload.get("status") or {}
+            if not isinstance(status_payload, dict):
+                status_payload = {}
+
             parsed.append(
                 {
                     "user_id": user_id,
@@ -141,9 +145,47 @@ class CrimeParser:
                         else 0 if payload.get("is_in_oc") is False
                         else None
                     ),
+                    "status_state": str(status_payload.get("state") or "").strip(),
+                    "status_description": str(status_payload.get("description") or "").strip(),
                     "last_action": int(payload.get("last_action", {}).get("timestamp", 0) or 0)
                     if isinstance(payload.get("last_action"), dict)
                     else int(payload.get("last_action") or 0),
+                    "updated_at": now,
+                }
+            )
+
+        return parsed
+
+    @staticmethod
+    def parse_crime_status_rows(response):
+        now = int(time.time())
+        parsed = []
+
+        raw_crimes = response.get("crimes", []) if isinstance(response, dict) else []
+        if isinstance(raw_crimes, dict):
+            iterable = raw_crimes.values()
+        else:
+            iterable = raw_crimes
+
+        for crime in iterable:
+            if not isinstance(crime, dict):
+                continue
+
+            crime_id = int(crime.get("id") or 0)
+            if crime_id <= 0:
+                continue
+
+            parsed.append(
+                {
+                    "crime_id": crime_id,
+                    "crime_name": str(crime.get("name") or "Unknown"),
+                    "difficulty": int(crime.get("difficulty") or 0),
+                    "status": str(crime.get("status") or "").strip(),
+                    "created_at": int(crime.get("created_at") or 0),
+                    "planning_at": int(crime.get("planning_at") or 0) if crime.get("planning_at") is not None else None,
+                    "ready_at": int(crime.get("ready_at") or 0) if crime.get("ready_at") is not None else None,
+                    "expired_at": int(crime.get("expired_at") or 0) if crime.get("expired_at") is not None else None,
+                    "executed_at": int(crime.get("executed_at") or 0) if crime.get("executed_at") is not None else None,
                     "updated_at": now,
                 }
             )

@@ -66,6 +66,8 @@ TORN_DISCORD_COMMAND_TIMEOUT=180
 TORN_DISCORD_ENABLE_MESSAGE_CONTENT_INTENT=0
 TORN_DISCORD_REVIVE_CHANNEL_ID=
 TORN_DISCORD_REVIVE_POLL_SECONDS=20
+TORN_DISCORD_OC_DELAY_CHANNEL_ID=
+TORN_DISCORD_OC_DELAY_POLL_SECONDS=60
 ```
 
 Notes:
@@ -95,6 +97,7 @@ Discord commands:
 - Slash: `/ti_revive_active` list active revive requests.
 - Slash: `/ti_revive_cancel` cancel your pending revive request.
 - Slash: `/ti_revive_channel` set or view the active revive channel.
+- Slash: `/ti_oc_delay_channel` set or view the OC delay alert channel.
 - Prefix: `!ti <command>` to run any CLI command string.
 - Long-running jobs: `!ti_bg`, `!ti_jobs`, `!ti_stop`, `!ti_output` (slash equivalents included).
 
@@ -106,6 +109,7 @@ Output formatting:
 - Revive request embeds include Torn profile links for target/requester.
 - When a revive request is fulfilled, the posted request embed is auto-updated to green and shows the reviver name.
 - The Discord bot periodically runs `sync revives --mode live` + `revive_requests reconcile` while active Discord revive requests exist (interval controlled by `TORN_DISCORD_REVIVE_POLL_SECONDS`).
+- The Discord bot can also poll `sync crimes --mode live` and post OC delay start/resolve alerts for flying members when `TORN_DISCORD_OC_DELAY_CHANNEL_ID` or `/ti_oc_delay_channel` is configured.
 
 ### `sync` — Import data from the API
 
@@ -753,6 +757,12 @@ python main.py report crimes oc_cpr
 # Current faction members not in active recruiting/planning crimes
 python main.py report crimes oc_outside --limit 200
 
+# Active and recent OC delays caused by flyers
+python main.py report crimes oc_delays --limit 25
+
+# Keep delay timing accurate by polling crimes continuously
+python main.py watch crimes --cooldown 60
+
 # Optional local inspection using search mode
 python main.py sync crimes --mode search --player ricky --limit 20
 
@@ -767,6 +777,32 @@ python main.py sync revives --mode backfill
 python main.py sync revives --mode search --reviver-name JeffBezas --limit 20
 python main.py sync revives --mode search --target-id 430598 --limit 20
 ```
+
+### OC Delay Tracking
+
+TornIntel now tracks when a `Planning` OC is still blocked by an assigned member who is flying after the planning timer has already hit zero.
+
+- A delay starts only when Torn reports a `Planning` crime whose `ready_at` time has passed and at least one assigned member is still `traveling` or `abroad`.
+- The delay remains open across later `sync crimes --mode live` polls and accumulates duration in seconds.
+- The delay resolves when the crime is no longer blocked, leaves the active OC set, or appears as completed in the latest crime payload.
+- Delay duration is anchored to Torn's `ready_at` timestamp, not just the first poll that notices the blocker.
+- Each delay start and resolve transition is stored in SQLite so you can report on active blockers and recent completed delays.
+
+Recommended usage:
+
+```bash
+# One-shot snapshot
+python main.py sync crimes --mode live
+python main.py report crimes oc_delays --limit 25
+
+# Continuous tracking for more accurate durations
+python main.py watch crimes --cooldown 60
+```
+
+Discord alerts:
+
+- Set `TORN_DISCORD_OC_DELAY_CHANNEL_ID` in `.env`, or run `/ti_oc_delay_channel #your-channel`.
+- The Discord bot polls at `TORN_DISCORD_OC_DELAY_POLL_SECONDS` intervals and posts when an OC delay starts and when it resolves.
 
 ### Revives and Revive Requests
 

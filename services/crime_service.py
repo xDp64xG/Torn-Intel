@@ -17,39 +17,74 @@ class CrimeService:
 
     def fetch_active_slots(self):
 
-        response = self.gateway.faction_basic_crimes_members_v2(category="available,completed")
-        item_names = self._get_item_name_map()
-        member_names = {
-            int(member["user_id"]): member["user_name"]
-            for member in CrimeParser.parse_members(response)
-        }
+        snapshot = self.fetch_snapshot()
+        return snapshot["active_slots"]
 
-        # Fallback if combined endpoint is unavailable.
-        if not isinstance(response, dict) or response.get("error"):
-            response = self.gateway.faction_crimes_v2(category="available,completed")
-            member_names = self._get_member_name_map()
+    #######################################################
+
+    def fetch_snapshot(self):
+
+        response, has_members = self._fetch_crime_response()
+        item_names = self._get_item_name_map()
 
         if not isinstance(response, dict):
-            return []
+            return {
+                "members": [],
+                "active_slots": [],
+                "cpr_rows": [],
+                "crime_status_rows": [],
+            }
 
         if response.get("error"):
             self.logger.error(f"Crime API error: {response['error']}")
-            return []
+            return {
+                "members": [],
+                "active_slots": [],
+                "cpr_rows": [],
+                "crime_status_rows": [],
+            }
 
-        return CrimeParser.parse_slots(
+        members = CrimeParser.parse_members(response) if has_members else self.fetch_roster_members()
+        member_names = {
+            int(member["user_id"]): member["user_name"]
+            for member in members
+            if int(member.get("user_id") or 0) > 0
+        }
+
+        active_slots = CrimeParser.parse_slots(
             response,
             member_names=member_names,
             allowed_statuses={"recruiting", "planning"},
             item_names=item_names,
         )
 
+        return {
+            "members": members,
+            "active_slots": active_slots,
+            "cpr_rows": CrimeParser.parse_cpr_rows(active_slots),
+            "crime_status_rows": CrimeParser.parse_crime_status_rows(response),
+        }
+
+    #######################################################
+
+    def _fetch_crime_response(self):
+
+        response = self.gateway.faction_basic_crimes_members_v2(category="available,completed")
+
+        # Fallback if combined endpoint is unavailable.
+        if not isinstance(response, dict) or response.get("error"):
+            response = self.gateway.faction_crimes_v2(category="available,completed")
+            return response, False
+
+        return response, True
+
     #######################################################
 
     def fetch_cpr_rows(self):
 
-        slots = self.fetch_active_slots()
+        snapshot = self.fetch_snapshot()
 
-        return slots, CrimeParser.parse_cpr_rows(slots)
+        return snapshot["active_slots"], snapshot["cpr_rows"]
 
     #######################################################
 

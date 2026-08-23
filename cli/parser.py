@@ -186,6 +186,7 @@ def build_parser():
             "oc_item_audit",
             "oc_cpr",
             "oc_outside",
+            "oc_delays",
         ],
         help="chain_hit: find who made the Nth hit. "
              "chain_stats: overall stats with top attackers. "
@@ -202,7 +203,8 @@ def build_parser():
              "loan_tracker: outstanding armoury loans with rough return ETA. "
              "oc_item_audit: OC required item holder audit. "
              "oc_cpr: OC checkpoint pass rate summary against rules. "
-             "oc_outside: current faction members not assigned to active OCs."
+             "oc_outside: current faction members not assigned to active OCs. "
+             "oc_delays: active and recent OC delays caused by flying members."
     )
 
     report.add_argument(
@@ -498,6 +500,7 @@ def build_parser():
             "chains",
             "rankedwars",
             "armoury",
+            "crimes",
             "revives",
         ]
     )
