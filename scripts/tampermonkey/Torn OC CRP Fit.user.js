@@ -254,13 +254,20 @@
         const index = used.get(key) || 0;
         used.set(key, index + 1);
         const role = crime.rolesByBase.get(key)[index];
-        if (!role || !isEmptySlot(slot)) return;
+        if (!role) return;
 
-        results.push({ crime, role, slot, level, cpr: readCpr(slot) });
+        results.push({
+          crime,
+          role,
+          slot,
+          level,
+          cpr: readCpr(slot),
+          occupied: !isEmptySlot(slot)
+        });
       });
     });
 
-    log('open slots found', results.length, results);
+    log('OC slots found', results.length, results);
     return results;
   }
 
@@ -337,7 +344,7 @@
     highlights = evaluated.map(entry => ({
       slot: entry.slot,
       kind: best[0] === entry ? 'crp-best' : entry.eligible ? 'crp-ok' : 'crp-low',
-      label: `${entry.cpr}/${entry.role.min_cpr} · w ${(entry.role.weight * 100).toFixed(1)}%`
+      label: `${entry.occupied ? 'IN' : 'OPEN'} ${entry.cpr ?? '?'}/${entry.role.min_cpr} · w ${(entry.role.weight * 100).toFixed(1)}%`
     }));
 
     drawHighlights();
@@ -354,21 +361,22 @@
 
     if (!total) {
       panel.innerHTML =
-        '<h4>OC CRP Fit</h4><div class="crp-muted">No open slots detected on recruiting crimes.</div>';
+        '<h4>OC CRP Fit</h4><div class="crp-muted">No slots detected on recruiting crimes.</div>';
       return;
     }
 
     const items = best
       .map(
         e =>
-          `<li><b>${e.crime.name}</b> (L${e.level}) — ${e.role.position}<br>` +
-          `<span class="crp-muted">your ${e.cpr} / need ${e.role.min_cpr} · weight ${(e.role.weight * 100).toFixed(1)}%</span></li>`
+          `<li><b>${e.crime.name}</b> (L${e.level}) — ${e.role.position} ` +
+          `<span class="crp-muted">[${e.occupied ? 'occupied' : 'open'}]</span><br>` +
+          `<span class="crp-muted">${e.cpr ?? '?'} / need ${e.role.min_cpr} · weight ${(e.role.weight * 100).toFixed(1)}%</span></li>`
       )
       .join('');
 
     panel.innerHTML =
-      `<h4>OC CRP Fit — best of ${total} open slots</h4>` +
-      (items ? `<ol>${items}</ol>` : '<div class="crp-muted">No open slot meets your CPR.</div>');
+      `<h4>OC CRP Fit — best of ${total} slots</h4>` +
+      (items ? `<ol>${items}</ol>` : '<div class="crp-muted">No slot meets your CPR.</div>');
   }
 
   function isOcPage() {
