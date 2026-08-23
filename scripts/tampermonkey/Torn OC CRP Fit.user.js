@@ -3,7 +3,7 @@
 // @namespace    http://tampermonkey.net/
 // @version      1.0
 // @description  Highlights the organised crime slots that best fit your CPR, using the faction CRP/weight table.
-// @match        https://www.torn.com/factions.php*
+// @match        https://www.torn.com/factions.php?step=your&type=1*
 // @grant        GM_registerMenuCommand
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -24,6 +24,7 @@
   const MANUAL_CPR_KEY = 'gts_crp_manual_cpr';
   const DEFAULT_TABLE_URL =
     'https://raw.githubusercontent.com/xDp64xG/Torn-Intel/main/data/oc_crp_table.json';
+  const SLOT_SELECTOR = '.tt-oc-highlight';
   const RESCAN_MS = 1500;
 
   let table = null;
@@ -184,6 +185,9 @@
   }
 
   function slotContainer(labelEl, panel) {
+    const marked = labelEl.closest(SLOT_SELECTOR);
+    if (marked && panel.contains(marked)) return marked;
+
     let node = labelEl;
     for (let depth = 0; depth < 5 && node.parentElement && node.parentElement !== panel; depth++) {
       node = node.parentElement;
@@ -209,7 +213,12 @@
   let marking = false;
 
   function scan() {
-    if (!table) return;
+    if (!table || !isOcPage()) {
+      clearMarks();
+      const panel = document.getElementById('crp-panel');
+      if (panel) panel.remove();
+      return;
+    }
     marking = true;
     clearMarks();
 
@@ -275,12 +284,17 @@
   }
 
   function isOcPage() {
-    return location.href.includes('factions.php') && /tab=crimes|step=your/.test(location.href);
+    return (
+      location.pathname === '/factions.php' &&
+      location.search.includes('step=your') &&
+      location.search.includes('type=1') &&
+      location.hash.includes('tab=crimes')
+    );
   }
 
   let timer = null;
   function schedule() {
-    if (marking || !isOcPage()) return;
+    if (marking) return;
     clearTimeout(timer);
     timer = setTimeout(scan, RESCAN_MS);
   }
