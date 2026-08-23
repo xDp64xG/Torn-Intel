@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OC CRP Fit
 // @namespace    http://tampermonkey.net/
-// @version      1.1
+// @version      1.2
 // @description  Highlights the organised crime slots that best fit your CPR, using the faction CRP/weight table.
 // @match        https://www.torn.com/factions.php?step=your&type=1*
 // @grant        GM_registerMenuCommand
@@ -27,6 +27,7 @@
     'https://raw.githubusercontent.com/xDp64xG/Torn-Intel/main/data/oc_crp_table.json';
   const SLOT_HINTS = '.tt-oc-highlight, [class*="waitingJoin"]';
   const CRIME_LIST = '#faction-crimes-root';
+  const OVERLAY_ID = 'crp-overlay';
   const RESCAN_MS = 1200;
 
   let table = null;
@@ -39,14 +40,17 @@
   /* END EMBEDDED TABLE */
 
   GM_addStyle(`
-    .crp-slot { position: relative; outline-offset: -2px; }
-    .crp-best { outline: 2px solid #4caf50 !important; background: rgba(76,175,80,0.12) !important; }
-    .crp-ok { outline: 2px solid #8bc34a !important; }
-    .crp-low { outline: 2px dashed #e53935 !important; background: rgba(229,57,53,0.10) !important; }
-    .crp-badge {
-      position: absolute; top: 2px; right: 2px; z-index: 5;
-      font-size: 10px; line-height: 12px; padding: 1px 4px; border-radius: 3px;
-      background: #222; color: #fff; pointer-events: none; white-space: nowrap;
+    #crp-overlay { position: absolute; top: 0; left: 0; width: 0; height: 0; z-index: 900; }
+    #crp-overlay .crp-box {
+      position: absolute; box-sizing: border-box; border-radius: 4px; pointer-events: none;
+    }
+    #crp-overlay .crp-best { border: 2px solid #4caf50; background: rgba(76,175,80,0.18); }
+    #crp-overlay .crp-ok { border: 2px solid #8bc34a; }
+    #crp-overlay .crp-low { border: 2px dashed #e53935; background: rgba(229,57,53,0.10); }
+    #crp-overlay .crp-badge {
+      position: absolute; top: 0; right: 0;
+      font-size: 10px; line-height: 12px; padding: 1px 4px; border-radius: 0 3px 0 3px;
+      background: rgba(0,0,0,0.85); color: #fff; white-space: nowrap;
     }
     #crp-panel {
       position: fixed; right: 12px; bottom: 12px; z-index: 9999; width: 250px;
@@ -213,11 +217,12 @@
     return crime.rolesByBase.has(key) ? key : null;
   }
 
+  // Torn renders your pass rate for the position in the slot header.
   function readCpr(slot) {
-    const labelled = slot.textContent.match(/cpr\D{0,12}(\d{1,3})/i);
-    if (labelled) return parseInt(labelled[1], 10);
-    const percents = slot.textContent.match(/(\d{1,3})\s*%/g);
-    if (percents && percents.length) return parseInt(percents[percents.length - 1], 10);
+    const chance = slot.querySelector('[class*="successChance"]');
+    const text = chance ? chance.textContent : slot.textContent;
+    const match = text.match(/(\d{1,3})\s*%/) || (chance && text.match(/(\d{1,3})/));
+    if (match) return parseInt(match[1], 10);
     return manualCpr || null;
   }
 
@@ -251,14 +256,49 @@
     return results;
   }
 
-  function clearMarks() {
-    document.querySelectorAll('.crp-badge').forEach(el => el.remove());
-    document.querySelectorAll('.crp-slot').forEach(el => {
-      el.classList.remove('crp-slot', 'crp-best', 'crp-ok', 'crp-low');
-    });
+  // Torn's React tree rewrites className on every re-render, so highlights are
+  // drawn as absolutely positioned boxes in an overlay layer instead.
+  let highlights = [];
+
+  function overlayRoot() {
+    let root = document.getElementById(OVERLAY_ID);
+    if (!root) {
+      root = document.createElement('div');
+      root.id = OVERLAY_ID;
+      document.body.appendChild(root);
+    }
+    return root;
   }
 
-  let marking = false;
+  function clearMarks() {
+    highlights = [];
+    const root = document.getElementById(OVERLAY_ID);
+    if (root) root.innerHTML = '';
+  }
+
+  function drawHighlights() {
+    const root = overlayRoot();
+    root.innerHTML = '';
+
+    highlights.forEach(entry => {
+      if (!document.contains(entry.slot)) return;
+      const rect = entry.slot.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+
+      const box = document.createElement('div');
+      box.className = `crp-box ${entry.kind}`;
+      box.style.left = `${rect.left + window.scrollX}px`;
+      box.style.top = `${rect.top + window.scrollY}px`;
+      box.style.width = `${rect.width}px`;
+      box.style.height = `${rect.height}px`;
+
+      const badge = document.createElement('span');
+      badge.className = 'crp-badge';
+      badge.textContent = entry.label;
+      box.appendChild(badge);
+      root.appendChild(box);
+    });
+  }
 
   function scan() {
     if (!table || !isOcPage()) {
@@ -267,8 +307,6 @@
       if (panel) panel.remove();
       return;
     }
-    marking = true;
-    clearMarks();
 
     const evaluated = collectSlots().map(entry => {
       const eligible = entry.cpr !== null && entry.cpr >= entry.role.min_cpr;
@@ -281,20 +319,14 @@
     evaluated.sort((a, b) => b.score - a.score);
     const best = evaluated.filter(e => e.eligible).slice(0, 3);
 
-    evaluated.forEach(entry => {
-      entry.slot.classList.add('crp-slot');
-      if (best[0] === entry) entry.slot.classList.add('crp-best');
-      else if (entry.eligible) entry.slot.classList.add('crp-ok');
-      else entry.slot.classList.add('crp-low');
+    highlights = evaluated.map(entry => ({
+      slot: entry.slot,
+      kind: best[0] === entry ? 'crp-best' : entry.eligible ? 'crp-ok' : 'crp-low',
+      label: `${entry.cpr}/${entry.role.min_cpr} · w ${(entry.role.weight * 100).toFixed(1)}%`
+    }));
 
-      const badge = document.createElement('span');
-      badge.className = 'crp-badge';
-      badge.textContent = `w ${(entry.role.weight * 100).toFixed(1)}% · need ${entry.role.min_cpr}`;
-      entry.slot.appendChild(badge);
-    });
-
+    drawHighlights();
     renderPanel(best, evaluated.length);
-    setTimeout(() => { marking = false; }, 0);
   }
 
   function renderPanel(best, total) {
@@ -335,14 +367,32 @@
 
   let timer = null;
   function schedule() {
-    if (marking) return;
     clearTimeout(timer);
     timer = setTimeout(scan, RESCAN_MS);
   }
 
+  function isOurs(node) {
+    return !!(node && node.closest && node.closest(`#${OVERLAY_ID}, #crp-panel`));
+  }
+
+  let frame = null;
+  function reposition() {
+    if (frame) return;
+    frame = requestAnimationFrame(() => {
+      frame = null;
+      if (highlights.length) drawHighlights();
+    });
+  }
+
   loadTable(false).then(() => {
     scan();
-    new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true });
+    new MutationObserver(mutations => {
+      if (mutations.every(m => isOurs(m.target))) return;
+      reposition();
+      schedule();
+    }).observe(document.body, { childList: true, subtree: true });
+    window.addEventListener('scroll', reposition, { passive: true });
+    window.addEventListener('resize', reposition);
     window.addEventListener('hashchange', schedule);
   });
 })();
