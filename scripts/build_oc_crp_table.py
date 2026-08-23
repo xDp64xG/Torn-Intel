@@ -12,6 +12,7 @@ Usage:  python scripts/build_oc_crp_table.py
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import openpyxl
@@ -19,6 +20,11 @@ import openpyxl
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "Reference" / "OC CRP Table.xlsx"
 TARGET = ROOT / "data" / "oc_crp_table.json"
+USERSCRIPT = ROOT / "scripts" / "tampermonkey" / "Torn OC CRP Fit.user.js"
+EMBED_PATTERN = re.compile(
+    r"(/\* BEGIN EMBEDDED TABLE.*?\*/\n)(.*?)(\n\s*/\* END EMBEDDED TABLE \*/)",
+    re.DOTALL,
+)
 
 ROLE_COLUMNS = range(1, 7)  # columns B-G
 CHANCE_COLUMN = 7  # column H
@@ -93,6 +99,20 @@ def parse_crimes(sheet) -> list[dict]:
     return crimes
 
 
+def embed_in_userscript(payload: dict) -> None:
+    """Keep the userscript's offline copy of the table in sync with the JSON."""
+    compact = json.dumps(
+        {k: v for k, v in payload.items() if k != "tier_policy"},
+        separators=(",", ":"),
+    )
+    text = USERSCRIPT.read_text(encoding="utf-8")
+    replacement = rf"\1  const EMBEDDED_TABLE = {compact.replace(chr(92), chr(92) * 2)};\3"
+    updated, count = EMBED_PATTERN.subn(replacement, text)
+    if not count:
+        raise SystemExit("EMBEDDED TABLE markers not found in the userscript")
+    USERSCRIPT.write_text(updated, encoding="utf-8")
+
+
 def main() -> None:
     workbook = openpyxl.load_workbook(SOURCE, data_only=True)
     payload = {
@@ -104,7 +124,9 @@ def main() -> None:
     }
 
     TARGET.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    embed_in_userscript(payload)
     print(f"Wrote {len(payload['crimes'])} crimes to {TARGET.relative_to(ROOT)}")
+    print(f"Embedded table into {USERSCRIPT.relative_to(ROOT)}")
 
 
 if __name__ == "__main__":
