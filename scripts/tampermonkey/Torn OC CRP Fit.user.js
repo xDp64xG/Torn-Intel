@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OC CRP Fit
 // @namespace    http://tampermonkey.net/
-// @version      1.0
+// @version      1.1
 // @description  Highlights the organised crime slots that best fit your CPR, using the faction CRP/weight table.
 // @match        https://www.torn.com/factions.php?step=your&type=1*
 // @grant        GM_registerMenuCommand
@@ -22,14 +22,17 @@
   const TABLE_URL_KEY = 'gts_crp_table_url';
   const TABLE_CACHE_KEY = 'gts_crp_table_cache';
   const MANUAL_CPR_KEY = 'gts_crp_manual_cpr';
+  const DEBUG_KEY = 'gts_crp_debug';
   const DEFAULT_TABLE_URL =
     'https://raw.githubusercontent.com/xDp64xG/Torn-Intel/main/data/oc_crp_table.json';
-  const SLOT_SELECTOR = '.tt-oc-highlight';
-  const RESCAN_MS = 1500;
+  const SLOT_HINTS = '.tt-oc-highlight, [class*="waitingJoin"]';
+  const CRIME_LIST = '#faction-crimes-root';
+  const RESCAN_MS = 1200;
 
   let table = null;
   let crimesByName = new Map();
   let manualCpr = Number(GM_getValue(MANUAL_CPR_KEY, 0)) || 0;
+  let debug = GM_getValue(DEBUG_KEY, false);
 
   GM_addStyle(`
     .crp-slot { position: relative; outline-offset: -2px; }
@@ -69,6 +72,16 @@
   });
 
   GM_registerMenuCommand('Refresh CRP table', () => loadTable(true).then(scan));
+
+  GM_registerMenuCommand('Toggle CRP debug logging', () => {
+    debug = !debug;
+    GM_setValue(DEBUG_KEY, debug);
+    scan();
+  });
+
+  function log(...args) {
+    if (debug) console.log('[CRP Fit]', ...args);
+  }
 
   function tableUrl() {
     return GM_getValue(TABLE_URL_KEY, DEFAULT_TABLE_URL);
@@ -132,75 +145,95 @@
     return grouped;
   }
 
-  function leafElements() {
-    return Array.from(document.querySelectorAll('div, span, p, li, h4, b'))
+  function leafElements(root) {
+    return Array.from((root || document).querySelectorAll('div, span, p, li, h4, b'))
       .filter(el => el.children.length === 0 && el.textContent.trim().length > 0);
   }
 
-  function findCrimePanels() {
-    const panels = [];
-    const seen = new Set();
-
-    leafElements().forEach(el => {
-      const crime = crimesByName.get(norm(el.textContent));
-      if (!crime) return;
-
-      let node = el.parentElement;
-      for (let depth = 0; depth < 8 && node; depth++, node = node.parentElement) {
-        const slots = findSlots(node, crime);
-        if (slots.length >= 2 && !seen.has(node)) {
-          seen.add(node);
-          panels.push({ crime, slots });
-          return;
-        }
-      }
+  // A slot in a recruiting crime carries the TornTools highlight class or Torn's
+  // hashed "waitingJoin" class; its parent element is the row holding every slot.
+  function findSlotRows() {
+    const root = document.querySelector(CRIME_LIST) || document.body;
+    const rows = new Set();
+    root.querySelectorAll(SLOT_HINTS).forEach(hint => {
+      const row = hint.parentElement;
+      if (row && row.children.length) rows.add(row);
     });
-
-    return panels;
+    return Array.from(rows);
   }
 
-  function findSlots(panel, crime) {
-    const used = new Map();
-    const slots = [];
+  function findCrimeCard(row) {
+    let node = row;
+    for (let depth = 0; depth < 10 && node; depth++, node = node.parentElement) {
+      const crime = crimeIn(node);
+      if (crime) return { card: node, crime };
+    }
+    return null;
+  }
 
-    Array.from(panel.querySelectorAll('div, span, p, li, b'))
-      .filter(el => el.children.length === 0)
-      .forEach(el => {
-        const key = basePosition(el.textContent);
-        const roles = crime.rolesByBase.get(key);
-        if (!roles) return;
+  function crimeIn(node) {
+    for (const el of leafElements(node)) {
+      const crime = crimesByName.get(norm(el.textContent));
+      if (crime) return crime;
+    }
+    return null;
+  }
+
+  function isRecruiting(card) {
+    return /recruiting|waiting|join/i.test(card.textContent);
+  }
+
+  function isEmptySlot(slot) {
+    if (/waitingjoin/i.test(slot.className)) return true;
+    if (slot.querySelector('a[href*="profiles.php"], a[href*="XID="]')) return false;
+    return /\bjoin\b|empty|available/i.test(slot.textContent);
+  }
+
+  function positionOf(slot, crime) {
+    for (const el of leafElements(slot)) {
+      const key = basePosition(el.textContent);
+      if (crime.rolesByBase.has(key)) return key;
+    }
+    const key = basePosition(slot.textContent);
+    return crime.rolesByBase.has(key) ? key : null;
+  }
+
+  function readCpr(slot) {
+    const labelled = slot.textContent.match(/cpr\D{0,12}(\d{1,3})/i);
+    if (labelled) return parseInt(labelled[1], 10);
+    const percents = slot.textContent.match(/(\d{1,3})\s*%/g);
+    if (percents && percents.length) return parseInt(percents[percents.length - 1], 10);
+    return manualCpr || null;
+  }
+
+  function collectSlots() {
+    const results = [];
+
+    findSlotRows().forEach(row => {
+      const match = findCrimeCard(row);
+      if (!match) {
+        log('slot row without a known crime name', row);
+        return;
+      }
+      const { card, crime } = match;
+      if (!isRecruiting(card)) return;
+
+      const used = new Map();
+      Array.from(row.children).forEach(slot => {
+        const key = positionOf(slot, crime);
+        if (!key) return;
 
         const index = used.get(key) || 0;
-        const role = roles[index];
-        if (!role) return;
-
-        const container = slotContainer(el, panel);
-        if (!container || slots.some(s => s.container === container)) return;
-
         used.set(key, index + 1);
-        slots.push({ role, container, cpr: readCpr(container) });
+        const role = crime.rolesByBase.get(key)[index];
+        if (!role || !isEmptySlot(slot)) return;
+
+        results.push({ crime, role, slot, cpr: readCpr(slot) });
       });
+    });
 
-    return slots;
-  }
-
-  function slotContainer(labelEl, panel) {
-    const marked = labelEl.closest(SLOT_SELECTOR);
-    if (marked && panel.contains(marked)) return marked;
-
-    let node = labelEl;
-    for (let depth = 0; depth < 5 && node.parentElement && node.parentElement !== panel; depth++) {
-      node = node.parentElement;
-      if (/\d+\s*%/.test(node.textContent)) return node;
-    }
-    return node === labelEl ? null : node;
-  }
-
-  function readCpr(container) {
-    const matches = container.textContent.match(/(\d{1,3})\s*%/g);
-    if (!matches || !matches.length) return manualCpr || null;
-    // The slot shows your own pass rate for that position; take the last value shown.
-    return parseInt(matches[matches.length - 1], 10);
+    log('open slots found', results.length, results);
+    return results;
   }
 
   function clearMarks() {
@@ -222,19 +255,11 @@
     marking = true;
     clearMarks();
 
-    const evaluated = [];
-    findCrimePanels().forEach(({ crime, slots }) => {
-      slots.forEach(slot => {
-        const cpr = slot.cpr;
-        const eligible = cpr !== null && cpr >= slot.role.min_cpr;
-        evaluated.push({
-          crime,
-          role: slot.role,
-          container: slot.container,
-          cpr,
-          eligible,
-          score: eligible ? slot.role.weight * (cpr / 100) : -1
-        });
+    const evaluated = collectSlots().map(entry => {
+      const eligible = entry.cpr !== null && entry.cpr >= entry.role.min_cpr;
+      return Object.assign(entry, {
+        eligible,
+        score: eligible ? entry.role.weight * (entry.cpr / 100) : -1
       });
     });
 
@@ -242,15 +267,15 @@
     const best = evaluated.filter(e => e.eligible).slice(0, 3);
 
     evaluated.forEach(entry => {
-      entry.container.classList.add('crp-slot');
-      if (best[0] === entry) entry.container.classList.add('crp-best');
-      else if (entry.eligible) entry.container.classList.add('crp-ok');
-      else entry.container.classList.add('crp-low');
+      entry.slot.classList.add('crp-slot');
+      if (best[0] === entry) entry.slot.classList.add('crp-best');
+      else if (entry.eligible) entry.slot.classList.add('crp-ok');
+      else entry.slot.classList.add('crp-low');
 
       const badge = document.createElement('span');
       badge.className = 'crp-badge';
       badge.textContent = `w ${(entry.role.weight * 100).toFixed(1)}% · need ${entry.role.min_cpr}`;
-      entry.container.appendChild(badge);
+      entry.slot.appendChild(badge);
     });
 
     renderPanel(best, evaluated.length);
@@ -266,7 +291,8 @@
     }
 
     if (!total) {
-      panel.innerHTML = '<h4>OC CRP Fit</h4><div class="crp-muted">No crime slots detected.</div>';
+      panel.innerHTML =
+        '<h4>OC CRP Fit</h4><div class="crp-muted">No open slots detected on recruiting crimes.</div>';
       return;
     }
 
@@ -279,8 +305,8 @@
       .join('');
 
     panel.innerHTML =
-      `<h4>OC CRP Fit — best of ${total} slots</h4>` +
-      (items ? `<ol>${items}</ol>` : '<div class="crp-muted">No slot meets your CPR.</div>');
+      `<h4>OC CRP Fit — best of ${total} open slots</h4>` +
+      (items ? `<ol>${items}</ol>` : '<div class="crp-muted">No open slot meets your CPR.</div>');
   }
 
   function isOcPage() {
