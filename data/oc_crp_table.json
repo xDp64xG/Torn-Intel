@@ -1,0 +1,849 @@
+{
+  "source": "OC CRP Table.xlsx",
+  "weight_bands": [
+    {
+      "label": "Very Low",
+      "min_weight": 0.0,
+      "min_cpr": 40
+    },
+    {
+      "label": "Low",
+      "min_weight": 0.05,
+      "min_cpr": 65
+    },
+    {
+      "label": "Standard",
+      "min_weight": 0.15,
+      "min_cpr": 70
+    },
+    {
+      "label": "High",
+      "min_weight": 0.25,
+      "min_cpr": 75
+    }
+  ],
+  "tier_adjustments": {
+    "8": -5,
+    "9": -5,
+    "10": -15
+  },
+  "tier_policy": {
+    "1": {
+      "summary": "No requirements \u2014 everyone welcome",
+      "notes": []
+    },
+    "2": {
+      "summary": "Minimum 70 CPR",
+      "notes": []
+    },
+    "3": {
+      "summary": "Minimum 70 CPR",
+      "notes": [
+        "Reserve spots for low CRP members",
+        "Gaslight the Way - Looter #2",
+        "Market Forces - Arsonist"
+      ]
+    },
+    "4": {
+      "summary": "Minimum 70 CPR",
+      "notes": [
+        "Reserve spot for low CRP members",
+        "Stage Fright - Muscle #2"
+      ]
+    },
+    "5": {
+      "summary": "Minimum 70 CPR",
+      "notes": []
+    },
+    "6": {
+      "summary": "Minimum 70 CPR",
+      "notes": [
+        "Excluding bidding war & sneaky git grab: 65 CPR, bidding war Driver at 60 CPR"
+      ]
+    },
+    "7": {
+      "summary": "Minimum 70 CPR",
+      "notes": [
+        "Hacker & Bomber, Engineer roles: 65 CPR"
+      ]
+    },
+    "8": {
+      "summary": "Minimum 60 CPR",
+      "notes": [
+        "( \u2022 CP: 65 CPR, \u2022 Stack the Deck; 65 CPR, Driver Position; 60)"
+      ]
+    },
+    "9": {
+      "summary": "Minimum 60 CPR",
+      "notes": [
+        "(\u2022 Stack the Deck, Driver position; 50 CPR | \u2022 Gone Fission, 60+ CPR, Hijacker & Engineer 55+)"
+      ]
+    },
+    "10": {
+      "summary": "Minimum 50 CPR",
+      "notes": []
+    }
+  },
+  "crimes": [
+    {
+      "name": "Smoke and Wing Mirrors",
+      "tier": 3,
+      "success_chance": 0.728,
+      "roles": [
+        {
+          "position": "Car Thief",
+          "weight": 0.509,
+          "min_cpr": 65
+        },
+        {
+          "position": "Imitator",
+          "weight": 0.2711,
+          "min_cpr": 65
+        },
+        {
+          "position": "Hustler #1",
+          "weight": 0.09,
+          "min_cpr": 65
+        },
+        {
+          "position": "Hustler #2",
+          "weight": 0.13,
+          "min_cpr": 65
+        }
+      ]
+    },
+    {
+      "name": "Market Forces",
+      "tier": 3,
+      "success_chance": 0.7149,
+      "roles": [
+        {
+          "position": "Enforcer",
+          "weight": 0.294,
+          "min_cpr": 65
+        },
+        {
+          "position": "Negotiator",
+          "weight": 0.2723,
+          "min_cpr": 65
+        },
+        {
+          "position": "Lookout",
+          "weight": 0.1637,
+          "min_cpr": 65
+        },
+        {
+          "position": "Arsonist",
+          "weight": 0.0446,
+          "min_cpr": 65
+        },
+        {
+          "position": "Muscle",
+          "weight": 0.2255,
+          "min_cpr": 65
+        }
+      ]
+    },
+    {
+      "name": "Gaslight the Way",
+      "tier": 3,
+      "success_chance": 0.7188,
+      "roles": [
+        {
+          "position": "Imitator #1",
+          "weight": 0.0939,
+          "min_cpr": 65
+        },
+        {
+          "position": "Imitator #2",
+          "weight": 0.2746,
+          "min_cpr": 65
+        },
+        {
+          "position": "Imitator #3",
+          "weight": 0.4132,
+          "min_cpr": 65
+        },
+        {
+          "position": "Looter #1",
+          "weight": 0.0939,
+          "min_cpr": 65
+        },
+        {
+          "position": "Looter #2",
+          "weight": 0.0,
+          "min_cpr": 65
+        },
+        {
+          "position": "Looter #3",
+          "weight": 0.1242,
+          "min_cpr": 65
+        }
+      ]
+    },
+    {
+      "name": "Snow Blind",
+      "tier": 4,
+      "success_chance": 0.7331,
+      "roles": [
+        {
+          "position": "Hustler",
+          "weight": 0.4841,
+          "min_cpr": 70
+        },
+        {
+          "position": "Imitator",
+          "weight": 0.3557,
+          "min_cpr": 70
+        },
+        {
+          "position": "Muscle #1",
+          "weight": 0.0851,
+          "min_cpr": 65
+        },
+        {
+          "position": "Muscle #2",
+          "weight": 0.0851,
+          "min_cpr": 65
+        }
+      ]
+    },
+    {
+      "name": "Plucking the Lotus Petal",
+      "tier": 4,
+      "success_chance": 0.7097,
+      "roles": [
+        {
+          "position": "Muscle",
+          "weight": 0.479,
+          "min_cpr": 70
+        },
+        {
+          "position": "Hustler",
+          "weight": 0.1439,
+          "min_cpr": 65
+        },
+        {
+          "position": "Robber #1",
+          "weight": 0.1403,
+          "min_cpr": 65
+        },
+        {
+          "position": "Robber #2",
+          "weight": 0.2368,
+          "min_cpr": 65
+        }
+      ]
+    },
+    {
+      "name": "Stage Fright",
+      "tier": 4,
+      "success_chance": 0.7075,
+      "roles": [
+        {
+          "position": "Enforcer",
+          "weight": 0.1567,
+          "min_cpr": 70
+        },
+        {
+          "position": "Muscle #1",
+          "weight": 0.2001,
+          "min_cpr": 70
+        },
+        {
+          "position": "Muscle #2",
+          "weight": 0.0266,
+          "min_cpr": 60
+        },
+        {
+          "position": "Muscle #3",
+          "weight": 0.0917,
+          "min_cpr": 60
+        },
+        {
+          "position": "Lookout",
+          "weight": 0.0619,
+          "min_cpr": 60
+        },
+        {
+          "position": "Sniper",
+          "weight": 0.463,
+          "min_cpr": 70
+        }
+      ]
+    },
+    {
+      "name": "Guardian Angels",
+      "tier": 5,
+      "success_chance": 0.75,
+      "roles": [
+        {
+          "position": "Enforcer",
+          "weight": 0.274,
+          "min_cpr": 70
+        },
+        {
+          "position": "Hustler",
+          "weight": 0.421,
+          "min_cpr": 70
+        },
+        {
+          "position": "Engineer",
+          "weight": 0.3049,
+          "min_cpr": 70
+        }
+      ]
+    },
+    {
+      "name": "Counter Offer",
+      "tier": 5,
+      "success_chance": 0.7226,
+      "roles": [
+        {
+          "position": "Robber",
+          "weight": 0.3595,
+          "min_cpr": 70
+        },
+        {
+          "position": "Looter",
+          "weight": 0.07,
+          "min_cpr": 60
+        },
+        {
+          "position": "Hacker",
+          "weight": 0.1213,
+          "min_cpr": 65
+        },
+        {
+          "position": "Picklock",
+          "weight": 0.1654,
+          "min_cpr": 65
+        },
+        {
+          "position": "Engineer",
+          "weight": 0.2839,
+          "min_cpr": 70
+        }
+      ]
+    },
+    {
+      "name": "No Reserve",
+      "tier": 5,
+      "success_chance": 0.75,
+      "roles": [
+        {
+          "position": "Car Thief",
+          "weight": 0.3051,
+          "min_cpr": 70
+        },
+        {
+          "position": "Techie",
+          "weight": 0.3837,
+          "min_cpr": 70
+        },
+        {
+          "position": "Engineer",
+          "weight": 0.3112,
+          "min_cpr": 70
+        }
+      ]
+    },
+    {
+      "name": "Honey Trap",
+      "tier": 5,
+      "success_chance": 0.75,
+      "roles": [
+        {
+          "position": "Muscle #1",
+          "weight": 0.3087,
+          "min_cpr": 70
+        },
+        {
+          "position": "Muscle #2",
+          "weight": 0.4215,
+          "min_cpr": 70
+        },
+        {
+          "position": "Enforcer",
+          "weight": 0.2698,
+          "min_cpr": 70
+        }
+      ]
+    },
+    {
+      "name": "Bidding War",
+      "tier": 6,
+      "success_chance": 0.7021,
+      "roles": [
+        {
+          "position": "Bomber #1",
+          "weight": 0.0785,
+          "min_cpr": 60
+        },
+        {
+          "position": "Bomber #2",
+          "weight": 0.1797,
+          "min_cpr": 70
+        },
+        {
+          "position": "Robber #1",
+          "weight": 0.071,
+          "min_cpr": 60
+        },
+        {
+          "position": "Robber #2",
+          "weight": 0.2287,
+          "min_cpr": 70
+        },
+        {
+          "position": "Robber #3",
+          "weight": 0.3167,
+          "min_cpr": 70
+        },
+        {
+          "position": "Driver",
+          "weight": 0.1254,
+          "min_cpr": 65
+        }
+      ]
+    },
+    {
+      "name": "Leave No Trace",
+      "tier": 6,
+      "success_chance": 0.75,
+      "roles": [
+        {
+          "position": "Techie",
+          "weight": 0.2901,
+          "min_cpr": 70
+        },
+        {
+          "position": "Negotiator",
+          "weight": 0.3413,
+          "min_cpr": 70
+        },
+        {
+          "position": "Imitator",
+          "weight": 0.3686,
+          "min_cpr": 70
+        }
+      ]
+    },
+    {
+      "name": "Dish It Out",
+      "tier": 6,
+      "success_chance": 0.7126,
+      "roles": [
+        {
+          "position": "Assassin",
+          "weight": 0.3734,
+          "min_cpr": 70
+        },
+        {
+          "position": "Muscle",
+          "weight": 0.2524,
+          "min_cpr": 70
+        },
+        {
+          "position": "Saboteur #1",
+          "weight": 0.1464,
+          "min_cpr": 65
+        },
+        {
+          "position": "Saboteur #2",
+          "weight": 0.0891,
+          "min_cpr": 60
+        },
+        {
+          "position": "Engineer",
+          "weight": 0.1387,
+          "min_cpr": 65
+        }
+      ]
+    },
+    {
+      "name": "Sneaky Git Grab",
+      "tier": 6,
+      "success_chance": 0.7182,
+      "roles": [
+        {
+          "position": "Imitator",
+          "weight": 0.1754,
+          "min_cpr": 65
+        },
+        {
+          "position": "Pickpocket",
+          "weight": 0.5083,
+          "min_cpr": 70
+        },
+        {
+          "position": "Hacker",
+          "weight": 0.1448,
+          "min_cpr": 65
+        },
+        {
+          "position": "Techie",
+          "weight": 0.1715,
+          "min_cpr": 65
+        }
+      ]
+    },
+    {
+      "name": "Blast From The Past",
+      "tier": 7,
+      "success_chance": 0.6972,
+      "roles": [
+        {
+          "position": "Hacker",
+          "weight": 0.1206,
+          "min_cpr": 65
+        },
+        {
+          "position": "Picklock #1",
+          "weight": 0.1085,
+          "min_cpr": 65
+        },
+        {
+          "position": "Picklock #2",
+          "weight": 0.0287,
+          "min_cpr": 40
+        },
+        {
+          "position": "Engineer",
+          "weight": 0.2402,
+          "min_cpr": 70
+        },
+        {
+          "position": "Bomber",
+          "weight": 0.1562,
+          "min_cpr": 70
+        },
+        {
+          "position": "Muscle",
+          "weight": 0.3459,
+          "min_cpr": 75
+        }
+      ]
+    },
+    {
+      "name": "Window of Opportunity",
+      "tier": 7,
+      "success_chance": 0.7056,
+      "roles": [
+        {
+          "position": "Engineer",
+          "weight": 0.1455,
+          "min_cpr": 65
+        },
+        {
+          "position": "Looter #1",
+          "weight": 0.1954,
+          "min_cpr": 70
+        },
+        {
+          "position": "Looter #2",
+          "weight": 0.258,
+          "min_cpr": 75
+        },
+        {
+          "position": "Muscle #1",
+          "weight": 0.2309,
+          "min_cpr": 70
+        },
+        {
+          "position": "Muscle #2",
+          "weight": 0.1701,
+          "min_cpr": 70
+        }
+      ]
+    },
+    {
+      "name": "Break the Bank",
+      "tier": 8,
+      "success_chance": 0.6549,
+      "roles": [
+        {
+          "position": "Robber",
+          "weight": 0.127,
+          "min_cpr": 60
+        },
+        {
+          "position": "Muscle #1",
+          "weight": 0.1352,
+          "min_cpr": 60
+        },
+        {
+          "position": "Muscle #2",
+          "weight": 0.101,
+          "min_cpr": 60
+        },
+        {
+          "position": "Muscle #3",
+          "weight": 0.3165,
+          "min_cpr": 70
+        },
+        {
+          "position": "Thief #1",
+          "weight": 0.0293,
+          "min_cpr": 40
+        },
+        {
+          "position": "Thief #2",
+          "weight": 0.291,
+          "min_cpr": 70
+        }
+      ]
+    },
+    {
+      "name": "Clinical Precision",
+      "tier": 8,
+      "success_chance": 0.6717,
+      "roles": [
+        {
+          "position": "Assassin",
+          "weight": 0.1606,
+          "min_cpr": 65
+        },
+        {
+          "position": "Cat Burglar",
+          "weight": 0.1894,
+          "min_cpr": 65
+        },
+        {
+          "position": "Cleaner",
+          "weight": 0.2169,
+          "min_cpr": 65
+        },
+        {
+          "position": "Imitator",
+          "weight": 0.4332,
+          "min_cpr": 70
+        }
+      ]
+    },
+    {
+      "name": "Stacking the Deck",
+      "tier": 8,
+      "success_chance": 0.6794,
+      "roles": [
+        {
+          "position": "Cat Burglar",
+          "weight": 0.2343,
+          "min_cpr": 65
+        },
+        {
+          "position": "Driver",
+          "weight": 0.0296,
+          "min_cpr": 40
+        },
+        {
+          "position": "Hacker",
+          "weight": 0.2544,
+          "min_cpr": 70
+        },
+        {
+          "position": "Imitator",
+          "weight": 0.4817,
+          "min_cpr": 70
+        }
+      ]
+    },
+    {
+      "name": "Lock Stock",
+      "tier": 8,
+      "success_chance": 0.6587,
+      "roles": [
+        {
+          "position": "Assassin",
+          "weight": 0.3859,
+          "min_cpr": 70
+        },
+        {
+          "position": "Smuggler",
+          "weight": 0.2495,
+          "min_cpr": 65
+        },
+        {
+          "position": "Hacker",
+          "weight": 0.1535,
+          "min_cpr": 65
+        },
+        {
+          "position": "Muscle #1",
+          "weight": 0.1056,
+          "min_cpr": 60
+        },
+        {
+          "position": "Muscle #2",
+          "weight": 0.1056,
+          "min_cpr": 60
+        }
+      ]
+    },
+    {
+      "name": "Manifest Cruelty",
+      "tier": 8,
+      "success_chance": 0.6662,
+      "roles": [
+        {
+          "position": "Hacker",
+          "weight": 0.1632,
+          "min_cpr": 65
+        },
+        {
+          "position": "Interrogator",
+          "weight": 0.2349,
+          "min_cpr": 65
+        },
+        {
+          "position": "Reviver",
+          "weight": 0.4627,
+          "min_cpr": 70
+        },
+        {
+          "position": "Cat Burglar",
+          "weight": 0.1391,
+          "min_cpr": 60
+        }
+      ]
+    },
+    {
+      "name": "Ace in the Hole",
+      "tier": 9,
+      "success_chance": 0.6604,
+      "roles": [
+        {
+          "position": "Imitator",
+          "weight": 0.2108,
+          "min_cpr": 65
+        },
+        {
+          "position": "Muscle #1",
+          "weight": 0.183,
+          "min_cpr": 65
+        },
+        {
+          "position": "Muscle #2",
+          "weight": 0.2465,
+          "min_cpr": 65
+        },
+        {
+          "position": "Hacker",
+          "weight": 0.2834,
+          "min_cpr": 70
+        },
+        {
+          "position": "Driver",
+          "weight": 0.0763,
+          "min_cpr": 60
+        }
+      ]
+    },
+    {
+      "name": "Gone Fission",
+      "tier": 9,
+      "success_chance": 0.6632,
+      "roles": [
+        {
+          "position": "Hijacker",
+          "weight": 0.2494,
+          "min_cpr": 65
+        },
+        {
+          "position": "Engineer",
+          "weight": 0.1557,
+          "min_cpr": 65
+        },
+        {
+          "position": "Pickpocket",
+          "weight": 0.1653,
+          "min_cpr": 65
+        },
+        {
+          "position": "Imitator",
+          "weight": 0.2694,
+          "min_cpr": 70
+        },
+        {
+          "position": "Bomber",
+          "weight": 0.1802,
+          "min_cpr": 65
+        }
+      ]
+    },
+    {
+      "name": "Hostile Takeover",
+      "tier": 9,
+      "success_chance": 0.6438,
+      "roles": [
+        {
+          "position": "Hacker",
+          "weight": 0.1026,
+          "min_cpr": 60
+        },
+        {
+          "position": "Engineer",
+          "weight": 0.2002,
+          "min_cpr": 65
+        },
+        {
+          "position": "Cat Burglar",
+          "weight": 0.1703,
+          "min_cpr": 65
+        },
+        {
+          "position": "Kidnapper",
+          "weight": 0.1277,
+          "min_cpr": 60
+        },
+        {
+          "position": "Negotiator",
+          "weight": 0.2529,
+          "min_cpr": 70
+        },
+        {
+          "position": "Muscle",
+          "weight": 0.1463,
+          "min_cpr": 60
+        }
+      ]
+    },
+    {
+      "name": "Crane Reaction",
+      "tier": 10,
+      "success_chance": 0.557,
+      "roles": [
+        {
+          "position": "Sniper",
+          "weight": 0.4074,
+          "min_cpr": 60
+        },
+        {
+          "position": "Lookout",
+          "weight": 0.1662,
+          "min_cpr": 55
+        },
+        {
+          "position": "Engineer",
+          "weight": 0.0829,
+          "min_cpr": 50
+        },
+        {
+          "position": "Bomber",
+          "weight": 0.1589,
+          "min_cpr": 55
+        },
+        {
+          "position": "Muscle #1",
+          "weight": 0.1068,
+          "min_cpr": 50
+        },
+        {
+          "position": "Muscle #2",
+          "weight": 0.0778,
+          "min_cpr": 50
+        }
+      ]
+    }
+  ]
+}

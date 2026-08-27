@@ -1,0 +1,49 @@
+{
+  "tiers": {
+    "1": {
+      "default_min_cpr": 0
+    },
+    "2": {
+      "default_min_cpr": 60
+    },
+    "3": {
+      "default_min_cpr": 70
+    },
+    "4": {
+      "default_min_cpr": 70
+    },
+    "5": {
+      "default_min_cpr": 70
+    },
+    "6": {
+      "default_min_cpr": 70
+    },
+    "7": {
+      "default_min_cpr": 60
+    },
+    "8": {
+      "default_min_cpr": 60
+    },
+    "9": {
+      "default_min_cpr": 85
+    },
+    "10": {
+      "default_min_cpr": 90
+    }
+  },
+  "crime_overrides": {
+    "Best of the Lot": {
+      "default_min_cpr": 60,
+      "positions": {
+        "Driver": 60,
+        "Muscle": 60
+      }
+    },
+    "First Aid and Abet": {
+      "default_min_cpr": 0,
+      "positions": {
+        "Medic": 0
+      }
+    }
+  }
+}
