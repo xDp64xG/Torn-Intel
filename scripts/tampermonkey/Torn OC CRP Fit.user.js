@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OC CRP Fit
 // @namespace    http://tampermonkey.net/
-// @version      1.5
+// @version      1.5.1
 // @description  Highlights the organised crime slots that best fit your CPR, using the faction CRP/weight table.
 // @match        https://www.torn.com/factions.php?step=your&type=1*
 // @grant        GM_registerMenuCommand
@@ -204,14 +204,44 @@
     return Array.from(rows);
   }
 
-  function mobileSlots(card, crime) {
-    const candidates = Array.from(card.querySelectorAll(MOBILE_SLOT_CANDIDATES))
-      .filter(slot => positionOf(slot, crime));
+  function mobileCrimeCards(root) {
+    const cards = new Set();
+    leafElements(root).forEach(title => {
+      if (!crimesByName.has(norm(title.textContent))) return;
+      let node = title.parentElement;
+      for (let depth = 0; depth < 10 && node; depth++, node = node.parentElement) {
+        const names = leafElements(node)
+          .filter(el => crimesByName.has(norm(el.textContent)));
+        if (names.length === 1 && (node.querySelector('[class*="levelValue"]') || /\b(?:T\s*)?\d{1,2}\s*\/\s*10\b/i.test(node.textContent))) {
+          cards.add(node);
+          break;
+        }
+      }
+    });
+    return Array.from(cards);
+  }
 
-    // Mobile nests the role label inside several presentation wrappers. Prefer
-    // the innermost matching wrapper so a role is evaluated only once.
-    return candidates.filter(slot =>
-      !candidates.some(other => other !== slot && slot.contains(other))
+  function mobileSlotForRole(roleLabel, card) {
+    let node = roleLabel.parentElement;
+    for (; node && node !== card; node = node.parentElement) {
+      const className = String(node.className || '');
+      if (/waitingjoin/i.test(className) ||
+          node.querySelector('a[href*="profiles.php"], a[href*="XID="]') ||
+          /\bjoin\b|empty|available/i.test(node.textContent)) {
+        return node;
+      }
+    }
+    return roleLabel.parentElement;
+  }
+
+  function mobileSlots(card, crime) {
+    const slots = new Set();
+    leafElements(card).forEach(roleLabel => {
+      const key = basePosition(roleLabel.textContent);
+      if (crime.rolesByBase.has(key)) slots.add(mobileSlotForRole(roleLabel, card));
+    });
+    return Array.from(slots).filter(slot =>
+      slot.matches(MOBILE_SLOT_CANDIDATES) || positionOf(slot, crime)
     );
   }
 
@@ -262,7 +292,8 @@
 
   function crimeLevel(card, crime) {
     const el = card.querySelector('[class*="levelValue"]');
-    const match = el && el.textContent.match(/(\d{1,2})/);
+    const match = (el && el.textContent.match(/(\d{1,2})/)) ||
+      card.textContent.match(/\b(?:T\s*)?(\d{1,2})\s*\/\s*10\b/i);
     return match ? parseInt(match[1], 10) : crime.tier;
   }
 
@@ -278,21 +309,9 @@
 
     if (isMobileClient()) {
       const root = document.querySelector(CRIME_LIST) || document.body;
-      const cards = new Set();
-      leafElements(root).forEach(el => {
-        if (!crimesByName.has(norm(el.textContent))) return;
-        let node = el;
-        for (let depth = 0; depth < 10 && node; depth++, node = node.parentElement) {
-          if (isRecruiting(node)) {
-            cards.add(node);
-            break;
-          }
-        }
-      });
-
-      cards.forEach(card => {
+      mobileCrimeCards(root).forEach(card => {
         const crime = crimeIn(card);
-        if (!crime) return;
+        if (!crime || !isRecruiting(card)) return;
         const level = crimeLevel(card, crime);
         const used = new Map();
         mobileSlots(card, crime).forEach(slot => {
