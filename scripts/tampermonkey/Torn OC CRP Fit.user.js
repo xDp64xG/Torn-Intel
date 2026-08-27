@@ -189,8 +189,8 @@
   function isMobileClient() {
     const ua = String(navigator.userAgent || '');
     const touch = (navigator.maxTouchPoints || 0) > 0;
-    const narrowViewport = Math.max(window.innerWidth || 0, window.innerHeight || 0) <= 1024;
-    return touch || narrowViewport || /Android|iPhone|iPad|iPod|Mobile|Torn\s*PDA/i.test(ua);
+    const narrowViewport = Math.max(window.innerWidth || 0, window.innerHeight || 0) <= 767;
+    return (touch && narrowViewport) || /Android|iPhone|iPad|iPod|Mobile|Torn\s*PDA/i.test(ua);
   }
 
   // A slot in a recruiting crime carries the TornTools highlight class or Torn's
@@ -213,7 +213,12 @@
       for (let depth = 0; depth < 10 && node; depth++, node = node.parentElement) {
         const names = leafElements(node)
           .filter(el => crimesByName.has(norm(el.textContent)));
-        if (names.length === 1 && (node.querySelector('[class*="levelValue"]') || /\b(?:T\s*)?\d{1,2}\s*\/\s*10\b/i.test(node.textContent))) {
+        const hasKnownRole = leafElements(node).some(el =>
+          Array.from(crimesByName.values()).some(crime =>
+            crime.rolesByBase.has(basePosition(el.textContent))
+          )
+        );
+        if (names.length === 1 && hasKnownRole) {
           cards.add(node);
           break;
         }
@@ -305,6 +310,28 @@
     return link ? link.href : null;
   }
 
+  function collectCardSlots(results, card, crime, slots) {
+    const level = crimeLevel(card, crime);
+    const used = new Map();
+    slots.forEach(slot => {
+      const key = positionOf(slot, crime);
+      if (!key) return;
+      const index = used.get(key) || 0;
+      used.set(key, index + 1);
+      const role = crime.rolesByBase.get(key)[index];
+      if (!role) return;
+      results.push({
+        crime,
+        role,
+        slot,
+        level,
+        crimeUrl: crimeLink(card),
+        cpr: readCpr(slot),
+        occupied: !isEmptySlot(slot)
+      });
+    });
+  }
+
   function collectSlots() {
     const results = [];
 
@@ -313,31 +340,26 @@
       mobileCrimeCards(root).forEach(card => {
         const crime = crimeIn(card);
         if (!crime || !isRecruiting(card)) return;
-        const level = crimeLevel(card, crime);
-        const used = new Map();
-        mobileSlots(card, crime).forEach(slot => {
-          const key = positionOf(slot, crime);
-          const index = used.get(key) || 0;
-          used.set(key, index + 1);
-          const role = crime.rolesByBase.get(key)[index];
-          if (!role) return;
-          results.push({
-            crime,
-            role,
-            slot,
-            level,
-            crimeUrl: crimeLink(card),
-            cpr: readCpr(slot),
-            occupied: !isEmptySlot(slot)
-          });
-        });
+        collectCardSlots(results, card, crime, mobileSlots(card, crime));
       });
 
       log('mobile OC slots found', results.length, results);
       return results;
     }
 
-    findSlotRows().forEach(row => {
+    const rows = findSlotRows();
+    if (!rows.length) {
+      const root = document.querySelector(CRIME_LIST) || document.body;
+      mobileCrimeCards(root).forEach(card => {
+        const crime = crimeIn(card);
+        if (!crime || !isRecruiting(card)) return;
+        collectCardSlots(results, card, crime, mobileSlots(card, crime));
+      });
+      log('desktop fallback OC slots found', results.length, results);
+      return results;
+    }
+
+    rows.forEach(row => {
       const match = findCrimeCard(row);
       if (!match) {
         log('slot row without a known crime name', row);
@@ -507,8 +529,7 @@
     return (
       location.pathname === '/factions.php' &&
       location.search.includes('step=your') &&
-      location.search.includes('type=1') &&
-      location.hash.includes('tab=crimes')
+      location.search.includes('type=1')
     );
   }
 
