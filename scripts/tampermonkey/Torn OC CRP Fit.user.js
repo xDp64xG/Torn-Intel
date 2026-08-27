@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OC CRP Fit
 // @namespace    http://tampermonkey.net/
-// @version      1.3
+// @version      1.4
 // @description  Highlights the organised crime slots that best fit your CPR, using the faction CRP/weight table.
 // @match        https://www.torn.com/factions.php?step=your&type=1*
 // @grant        GM_registerMenuCommand
@@ -25,7 +25,8 @@
   const DEBUG_KEY = 'gts_crp_debug';
   const DEFAULT_TABLE_URL =
     'https://raw.githubusercontent.com/xDp64xG/Torn-Intel/main/data/oc_crp_table.json';
-  const SLOT_HINTS = '.tt-oc-highlight, [class*="waitingJoin"]';
+  const DESKTOP_SLOT_HINTS = '.tt-oc-highlight, [class*="waitingJoin"]';
+  const MOBILE_SLOT_CANDIDATES = '[class*="slot"], [class*="position"], [class*="member"]';
   const CRIME_LIST = '#faction-crimes-root';
   const OVERLAY_ID = 'crp-overlay';
   const RESCAN_MS = 1200;
@@ -170,16 +171,34 @@
       .filter(el => el.children.length === 0 && el.textContent.trim().length > 0);
   }
 
+  function isMobileClient() {
+    const ua = String(navigator.userAgent || '');
+    const touch = (navigator.maxTouchPoints || 0) > 0;
+    const narrowViewport = Math.max(window.innerWidth || 0, window.innerHeight || 0) <= 1024;
+    return touch || narrowViewport || /Android|iPhone|iPad|iPod|Mobile|Torn\s*PDA/i.test(ua);
+  }
+
   // A slot in a recruiting crime carries the TornTools highlight class or Torn's
   // hashed "waitingJoin" class; its parent element is the row holding every slot.
   function findSlotRows() {
     const root = document.querySelector(CRIME_LIST) || document.body;
     const rows = new Set();
-    root.querySelectorAll(SLOT_HINTS).forEach(hint => {
+    root.querySelectorAll(DESKTOP_SLOT_HINTS).forEach(hint => {
       const row = hint.parentElement;
       if (row && row.children.length) rows.add(row);
     });
     return Array.from(rows);
+  }
+
+  function mobileSlots(card, crime) {
+    const candidates = Array.from(card.querySelectorAll(MOBILE_SLOT_CANDIDATES))
+      .filter(slot => positionOf(slot, crime));
+
+    // Mobile nests the role label inside several presentation wrappers. Prefer
+    // the innermost matching wrapper so a role is evaluated only once.
+    return candidates.filter(slot =>
+      !candidates.some(other => other !== slot && slot.contains(other))
+    );
   }
 
   function findCrimeCard(row) {
@@ -235,6 +254,46 @@
 
   function collectSlots() {
     const results = [];
+
+    if (isMobileClient()) {
+      const root = document.querySelector(CRIME_LIST) || document.body;
+      const cards = new Set();
+      leafElements(root).forEach(el => {
+        if (!crimesByName.has(norm(el.textContent))) return;
+        let node = el;
+        for (let depth = 0; depth < 10 && node; depth++, node = node.parentElement) {
+          if (isRecruiting(node)) {
+            cards.add(node);
+            break;
+          }
+        }
+      });
+
+      cards.forEach(card => {
+        const crime = crimeIn(card);
+        if (!crime) return;
+        const level = crimeLevel(card, crime);
+        const used = new Map();
+        mobileSlots(card, crime).forEach(slot => {
+          const key = positionOf(slot, crime);
+          const index = used.get(key) || 0;
+          used.set(key, index + 1);
+          const role = crime.rolesByBase.get(key)[index];
+          if (!role) return;
+          results.push({
+            crime,
+            role,
+            slot,
+            level,
+            cpr: readCpr(slot),
+            occupied: !isEmptySlot(slot)
+          });
+        });
+      });
+
+      log('mobile OC slots found', results.length, results);
+      return results;
+    }
 
     findSlotRows().forEach(row => {
       const match = findCrimeCard(row);
