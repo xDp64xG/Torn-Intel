@@ -64,7 +64,13 @@
     #crp-panel .crp-muted { color: #999; }
   `);
 
-  GM_registerMenuCommand('Set CRP table URL', () => {
+  function registerMenuCommand(label, handler) {
+    if (typeof GM_registerMenuCommand === 'function') {
+      GM_registerMenuCommand(label, handler);
+    }
+  }
+
+  registerMenuCommand('Set CRP table URL', () => {
     const url = prompt('URL of oc_crp_table.json:', tableUrl());
     if (url) {
       GM_setValue(TABLE_URL_KEY, url.trim());
@@ -72,7 +78,7 @@
     }
   });
 
-  GM_registerMenuCommand('Set fallback CPR', () => {
+  registerMenuCommand('Set fallback CPR', () => {
     const value = prompt('Your CPR to use when the page does not show one (0 = off):', manualCpr);
     if (value !== null) {
       manualCpr = Number(value) || 0;
@@ -81,9 +87,9 @@
     }
   });
 
-  GM_registerMenuCommand('Refresh CRP table', () => loadTable(true).then(scan));
+  registerMenuCommand('Refresh CRP table', () => loadTable(true).then(scan));
 
-  GM_registerMenuCommand('Toggle CRP debug logging', () => {
+  registerMenuCommand('Toggle CRP debug logging', () => {
     debug = !debug;
     GM_setValue(DEBUG_KEY, debug);
     scan();
