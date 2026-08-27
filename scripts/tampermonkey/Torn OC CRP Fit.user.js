@@ -2,7 +2,7 @@
 // @name         Torn OC CRP Fit
 // @namespace    http://tampermonkey.net/
 // @author       JeffBezas
-// @version      1.5.1
+// @version      1.5.3
 // @description  Highlights the organised crime slots that best fit your CPR, using the faction CRP/weight table.
 // @match        https://www.torn.com/factions.php?step=your&type=1*
 // @grant        GM_registerMenuCommand
