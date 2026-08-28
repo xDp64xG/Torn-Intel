@@ -117,28 +117,28 @@
       "name": "Thou Shalt Not Steal",
       "tier": 2,
       "roles": [
-        { "position": "Thief", "weight": 0.124, "min_cpr": 70 },
-        { "position": "Picklock", "weight": 0.497, "min_cpr": 70 },
-        { "position": "Pickpocket", "weight": 0.379, "min_cpr": 70 }
+        { "position": "Thief", "weight": 0.124, "min_cpr": 60 },
+        { "position": "Picklock", "weight": 0.497, "min_cpr": 60 },
+        { "position": "Pickpocket", "weight": 0.379, "min_cpr": 60 }
       ]
     },
     {
       "name": "Best of the Lot",
       "tier": 2,
       "roles": [
-        { "position": "Car Thief", "weight": 0.195, "min_cpr": 70 },
-        { "position": "Picklock", "weight": 0.207, "min_cpr": 70 },
-        { "position": "Muscle", "weight": 0.437, "min_cpr": 70 },
-        { "position": "Imitator", "weight": 0.161, "min_cpr": 70 }
+        { "position": "Car Thief", "weight": 0.195, "min_cpr": 60 },
+        { "position": "Picklock", "weight": 0.207, "min_cpr": 60 },
+        { "position": "Muscle", "weight": 0.437, "min_cpr": 60 },
+        { "position": "Imitator", "weight": 0.161, "min_cpr": 60 }
       ]
     },
     {
       "name": "Cash Me If You Can",
       "tier": 2,
       "roles": [
-        { "position": "Lookout", "weight": 0.178, "min_cpr": 70 },
-        { "position": "Thief #1", "weight": 0.28, "min_cpr": 70 },
-        { "position": "Thief #2", "weight": 0.542, "min_cpr": 70 }
+        { "position": "Lookout", "weight": 0.178, "min_cpr": 60 },
+        { "position": "Thief #1", "weight": 0.28, "min_cpr": 60 },
+        { "position": "Thief #2", "weight": 0.542, "min_cpr": 60 }
       ]
     },
     {
