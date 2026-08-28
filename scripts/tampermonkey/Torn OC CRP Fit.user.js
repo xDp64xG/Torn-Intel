@@ -2,7 +2,7 @@
 // @name         Torn OC CRP Fit
 // @namespace    http://tampermonkey.net/
 // @author       JeffBezas
-// @version      1.5.6
+// @version      1.5.7
 // @description  Highlights the organised crime slots that best fit your CPR, using the faction CRP/weight table.
 // @match        https://www.torn.com/factions.php?step=your&type=1*
 // @grant        GM_registerMenuCommand
@@ -236,7 +236,7 @@
   }
 
   function leafElements(root) {
-    return Array.from((root || document).querySelectorAll('div, span, p, li, h4, b'))
+    return Array.from((root || document).querySelectorAll('a, div, span, p, li, h4, b'))
       .filter(el => el.children.length === 0 && el.textContent.trim().length > 0);
   }
 
@@ -374,6 +374,7 @@
     const level = crimeLevel(card, crime);
     const used = new Map();
     slots.forEach(slot => {
+      if (results.some(entry => entry.slot === slot)) return;
       const key = positionOf(slot, crime);
       if (!key) return;
       const index = used.get(key) || 0;
@@ -407,19 +408,7 @@
       return results;
     }
 
-    const rows = findSlotRows();
-    if (!rows.length) {
-      const root = document.querySelector(CRIME_LIST) || document.body;
-      mobileCrimeCards(root).forEach(card => {
-        const crime = crimeIn(card);
-        if (!crime) return;
-        collectCardSlots(results, card, crime, mobileSlots(card, crime));
-      });
-      log('desktop fallback OC slots found', results.length, results);
-      return results;
-    }
-
-    rows.forEach(row => {
+    findSlotRows().forEach(row => {
       const match = findCrimeCard(row);
       if (!match) {
         log('slot row without a known crime name', row);
@@ -447,6 +436,16 @@
           occupied: !isEmptySlot(slot)
         });
       });
+    });
+
+    // Recruiting rows expose waitingJoin directly, but Planning and Completed
+    // cards do not. Always merge card-derived slots so every assigned member is
+    // evaluated, even when Recruiting is also visible in the current DOM.
+    const root = document.querySelector(CRIME_LIST) || document.body;
+    mobileCrimeCards(root).forEach(card => {
+      const crime = crimeIn(card);
+      if (!crime) return;
+      collectCardSlots(results, card, crime, mobileSlots(card, crime));
     });
 
     log('OC slots found', results.length, results);
