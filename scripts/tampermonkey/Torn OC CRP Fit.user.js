@@ -2,7 +2,7 @@
 // @name         Torn OC CRP Fit
 // @namespace    http://tampermonkey.net/
 // @author       JeffBezas
-// @version      1.5.5
+// @version      1.5.6
 // @description  Highlights the organised crime slots that best fit your CPR, using the faction CRP/weight table.
 // @match        https://www.torn.com/factions.php?step=your&type=1*
 // @grant        GM_registerMenuCommand
@@ -27,6 +27,7 @@
   const MANUAL_CPR_KEY = 'gts_crp_manual_cpr';
   const DEBUG_KEY = 'gts_crp_debug';
   const PANEL_COLLAPSED_KEY = 'gts_crp_panel_collapsed';
+  const PANEL_POSITION_KEY = 'gts_crp_panel_position';
   const TABLE_PROFILES = {
     GTS: {
       label: 'GTS',
@@ -42,7 +43,7 @@
     { name: 'Pet Project', tier: 1, roles: [{ position: 'Kidnapper', weight: 0.309, min_cpr: 0 }, { position: 'Muscle', weight: 0.326, min_cpr: 0 }, { position: 'Picklock', weight: 0.364, min_cpr: 0 }] },
     { name: 'First Aid and Abet', tier: 1, roles: [{ position: 'Pickpocket', weight: 0.437, min_cpr: 0 }, { position: 'Decoy', weight: 0.307, min_cpr: 0 }, { position: 'Picklock', weight: 0.26, min_cpr: 0 }] },
     { name: 'Mob Mentality', tier: 1, roles: [{ position: 'Looter #1', weight: 0.34, min_cpr: 0 }, { position: 'Looter #2', weight: 0.265, min_cpr: 0 }, { position: 'Looter #3', weight: 0.184, min_cpr: 0 }, { position: 'Looter #4', weight: 0.212, min_cpr: 0 }] },
-    { name: 'Though Shalt Not Steal', tier: 2, roles: [{ position: 'Thief', weight: 0.124, min_cpr: 70 }, { position: 'Picklock', weight: 0.497, min_cpr: 70 }, { position: 'Pickpocket', weight: 0.379, min_cpr: 70 }] },
+    { name: 'Thou Shalt Not Steal', tier: 2, roles: [{ position: 'Thief', weight: 0.124, min_cpr: 70 }, { position: 'Picklock', weight: 0.497, min_cpr: 70 }, { position: 'Pickpocket', weight: 0.379, min_cpr: 70 }] },
     { name: 'Best of the Lot', tier: 2, roles: [{ position: 'Car Thief', weight: 0.195, min_cpr: 70 }, { position: 'Picklock', weight: 0.207, min_cpr: 70 }, { position: 'Muscle', weight: 0.437, min_cpr: 70 }, { position: 'Imitator', weight: 0.161, min_cpr: 70 }] },
     { name: 'Cash Me If You Can', tier: 2, roles: [{ position: 'Lookout', weight: 0.178, min_cpr: 70 }, { position: 'Thief #1', weight: 0.28, min_cpr: 70 }, { position: 'Thief #2', weight: 0.542, min_cpr: 70 }] }
   ];
@@ -57,7 +58,7 @@
   let crimesByName = new Map();
   let manualCpr = Number(GM_getValue(MANUAL_CPR_KEY, 0)) || 0;
   let debug = GM_getValue(DEBUG_KEY, false);
-  let panelCollapsed = GM_getValue(PANEL_COLLAPSED_KEY, false);
+  let panelCollapsed = GM_getValue(PANEL_COLLAPSED_KEY, true);
   let tableProfile = GM_getValue(TABLE_PROFILE_KEY, 'GTS');
   if (!TABLE_PROFILES[tableProfile]) tableProfile = 'GTS';
 
@@ -81,12 +82,12 @@
     }
     #crp-panel {
       position: fixed; right: max(12px, env(safe-area-inset-right));
-      bottom: max(12px, env(safe-area-inset-bottom)); z-index: 9999;
+      bottom: max(12px, env(safe-area-inset-bottom)); z-index: 2147483647;
       width: min(310px, calc(100vw - 24px)); max-height: calc(100dvh - 24px); box-sizing: border-box;
       background: #1b1b1b; color: #eee; border: 1px solid #444; border-radius: 6px;
       font: 12px/1.4 Arial, sans-serif; padding: 8px;
     }
-    #crp-panel .crp-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    #crp-panel .crp-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; cursor: move; touch-action: none; }
     #crp-panel h4 { margin: 0; font-size: 12px; color: #8bc34a; }
     #crp-panel .crp-toggle { border: 0; background: transparent; color: #eee; cursor: pointer; font-size: 16px; line-height: 14px; padding: 0 3px; }
     #crp-panel .crp-body { margin-top: 6px; max-height: min(48vh, calc(100dvh - 70px)); overflow-y: auto; }
@@ -210,11 +211,16 @@
   }
 
   function norm(text) {
-    return (text || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    return (text || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toLowerCase();
   }
 
   function basePosition(position) {
-    return norm(position.replace(/#\d+\s*$/, ''));
+    return norm(position.replace(/\s*#?\d+\s*$/, ''));
   }
 
   // "Muscle #1"/"Muscle #2" appear on the page as two plain "Muscle" slots,
@@ -279,9 +285,15 @@
     let node = roleLabel.parentElement;
     for (; node && node !== card; node = node.parentElement) {
       const className = String(node.className || '');
-      if (/waitingjoin/i.test(className) ||
+      const rolesInNode = leafElements(node).filter(label =>
+        Array.from(crimesByName.values()).some(crime =>
+          crime.rolesByBase.has(basePosition(label.textContent))
+        )
+      );
+      const hasSlotState = /waitingjoin/i.test(className) ||
           node.querySelector('a[href*="profiles.php"], a[href*="XID="]') ||
-          /\bjoin\b|empty|available/i.test(node.textContent)) {
+          /\bjoin\b|empty|available/i.test(node.textContent);
+      if (hasSlotState && rolesInNode.length === 1) {
         return node;
       }
     }
@@ -531,6 +543,7 @@
       panel.id = 'crp-panel';
       document.body.appendChild(panel);
     }
+    restorePanelPosition(panel);
 
     const items = best
       .map(
@@ -595,6 +608,51 @@
       setTableProfile('custom');
       loadTable(true).then(scan);
     });
+    makePanelDraggable(panel, panel.querySelector('.crp-panel-head'));
+  }
+
+  function restorePanelPosition(panel) {
+    const position = GM_getValue(PANEL_POSITION_KEY, null);
+    if (!position || !Number.isFinite(position.left) || !Number.isFinite(position.top)) return;
+    panel.style.left = `${Math.max(0, Math.min(position.left, window.innerWidth - panel.offsetWidth))}px`;
+    panel.style.top = `${Math.max(0, Math.min(position.top, window.innerHeight - panel.offsetHeight))}px`;
+    panel.style.right = 'auto';
+    panel.style.bottom = 'auto';
+  }
+
+  function makePanelDraggable(panel, handle) {
+    let pointerId = null;
+    let offsetX = 0;
+    let offsetY = 0;
+
+    handle.addEventListener('pointerdown', event => {
+      if (event.target.closest('button, select, option')) return;
+      const rect = panel.getBoundingClientRect();
+      pointerId = event.pointerId;
+      offsetX = event.clientX - rect.left;
+      offsetY = event.clientY - rect.top;
+      handle.setPointerCapture(pointerId);
+      event.preventDefault();
+    });
+
+    handle.addEventListener('pointermove', event => {
+      if (event.pointerId !== pointerId) return;
+      const left = Math.max(0, Math.min(event.clientX - offsetX, window.innerWidth - panel.offsetWidth));
+      const top = Math.max(0, Math.min(event.clientY - offsetY, window.innerHeight - panel.offsetHeight));
+      panel.style.left = `${left}px`;
+      panel.style.top = `${top}px`;
+      panel.style.right = 'auto';
+      panel.style.bottom = 'auto';
+    });
+
+    handle.addEventListener('pointerup', event => {
+      if (event.pointerId !== pointerId) return;
+      pointerId = null;
+      GM_setValue(PANEL_POSITION_KEY, {
+        left: panel.offsetLeft,
+        top: panel.offsetTop
+      });
+    });
   }
 
   function isOcPage() {
@@ -642,5 +700,8 @@
     window.addEventListener('scroll', reposition, { passive: true });
     window.addEventListener('resize', reposition);
     window.addEventListener('hashchange', schedule);
+    document.addEventListener('click', event => {
+      if (event.target.closest('a, button, [role="tab"]')) setTimeout(schedule, 0);
+    });
   });
 })();

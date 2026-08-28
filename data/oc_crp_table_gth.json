@@ -114,7 +114,7 @@
       ]
     },
     {
-      "name": "Though Shalt Not Steal",
+      "name": "Thou Shalt Not Steal",
       "tier": 2,
       "roles": [
         { "position": "Thief", "weight": 0.124, "min_cpr": 70 },
