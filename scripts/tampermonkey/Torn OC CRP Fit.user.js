@@ -2,7 +2,7 @@
 // @name         Torn OC CRP Fit
 // @namespace    http://tampermonkey.net/
 // @author       JeffBezas
-// @version      1.5.3
+// @version      1.5.4
 // @description  Highlights the organised crime slots that best fit your CPR, using the faction CRP/weight table.
 // @match        https://www.torn.com/factions.php?step=your&type=1*
 // @grant        GM_registerMenuCommand
@@ -54,18 +54,21 @@
     #crp-overlay .crp-low { border: 2px dashed #e53935; background: rgba(229,57,53,0.10); }
     #crp-overlay .crp-badge {
       position: absolute; top: 0; right: 0;
+      max-width: 100%; box-sizing: border-box; overflow-wrap: anywhere;
       font-size: 10px; line-height: 12px; padding: 1px 4px; border-radius: 0 3px 0 3px;
-      background: rgba(0,0,0,0.85); color: #fff; white-space: nowrap;
+      background: rgba(0,0,0,0.85); color: #fff; text-align: right; white-space: pre-line;
     }
     #crp-panel {
-      position: fixed; right: 12px; bottom: 12px; z-index: 9999; width: min(310px, calc(100vw - 24px));
+      position: fixed; right: max(12px, env(safe-area-inset-right));
+      bottom: max(12px, env(safe-area-inset-bottom)); z-index: 9999;
+      width: min(310px, calc(100vw - 24px)); max-height: calc(100dvh - 24px); box-sizing: border-box;
       background: #1b1b1b; color: #eee; border: 1px solid #444; border-radius: 6px;
       font: 12px/1.4 Arial, sans-serif; padding: 8px;
     }
     #crp-panel .crp-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
     #crp-panel h4 { margin: 0; font-size: 12px; color: #8bc34a; }
     #crp-panel .crp-toggle { border: 0; background: transparent; color: #eee; cursor: pointer; font-size: 16px; line-height: 14px; padding: 0 3px; }
-    #crp-panel .crp-body { margin-top: 6px; max-height: 48vh; overflow-y: auto; }
+    #crp-panel .crp-body { margin-top: 6px; max-height: min(48vh, calc(100dvh - 70px)); overflow-y: auto; }
     #crp-panel.crp-collapsed .crp-body { display: none; }
     #crp-panel ol { margin: 0; padding-left: 16px; }
     #crp-panel .crp-muted { color: #999; }
@@ -339,7 +342,7 @@
       const root = document.querySelector(CRIME_LIST) || document.body;
       mobileCrimeCards(root).forEach(card => {
         const crime = crimeIn(card);
-        if (!crime || !isRecruiting(card)) return;
+        if (!crime) return;
         collectCardSlots(results, card, crime, mobileSlots(card, crime));
       });
 
@@ -352,7 +355,7 @@
       const root = document.querySelector(CRIME_LIST) || document.body;
       mobileCrimeCards(root).forEach(card => {
         const crime = crimeIn(card);
-        if (!crime || !isRecruiting(card)) return;
+        if (!crime) return;
         collectCardSlots(results, card, crime, mobileSlots(card, crime));
       });
       log('desktop fallback OC slots found', results.length, results);
@@ -366,8 +369,6 @@
         return;
       }
       const { card, crime } = match;
-      if (!isRecruiting(card)) return;
-
       const level = crimeLevel(card, crime);
       const used = new Map();
       Array.from(row.children).forEach(slot => {
@@ -470,7 +471,7 @@
     highlights = evaluated.map(entry => ({
       slot: entry.slot,
       kind: best[0] === entry ? 'crp-best' : entry.eligible ? 'crp-ok' : 'crp-low',
-      label: `${entry.role.position}: ${entry.occupied ? 'IN' : 'OPEN'} ${entry.cpr ?? '?'}/${entry.role.min_cpr} · w ${(entry.role.weight * 100).toFixed(1)}%`
+      label: `${entry.role.position}\n${entry.occupied ? 'IN' : 'OPEN'} ${entry.cpr ?? '?'}/${entry.role.min_cpr} · w ${(entry.role.weight * 100).toFixed(1)}%`
     }));
 
     drawHighlights();
