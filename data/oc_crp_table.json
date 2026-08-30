@@ -234,12 +234,12 @@
         {
           "position": "Imitator #2",
           "weight": 0.2746,
-          "min_cpr": 75
+          "min_cpr": 65
         },
         {
           "position": "Imitator #3",
           "weight": 0.4132,
-          "min_cpr": 75
+          "min_cpr": 65
         },
         {
           "position": "Looter #1",
@@ -249,7 +249,7 @@
         {
           "position": "Looter #2",
           "weight": 0.0,
-          "min_cpr": 40
+          "min_cpr": 65
         },
         {
           "position": "Looter #3",
@@ -266,27 +266,27 @@
         {
           "position": "Enforcer",
           "weight": 0.294,
-          "min_cpr": 75
+          "min_cpr": 65
         },
         {
           "position": "Negotiator",
           "weight": 0.2723,
-          "min_cpr": 75
+          "min_cpr": 65
         },
         {
           "position": "Lookout",
           "weight": 0.1637,
-          "min_cpr": 70
+          "min_cpr": 65
         },
         {
           "position": "Arsonist",
           "weight": 0.0446,
-          "min_cpr": 40
+          "min_cpr": 65
         },
         {
           "position": "Muscle",
           "weight": 0.2255,
-          "min_cpr": 70
+          "min_cpr": 65
         }
       ]
     },
@@ -298,12 +298,12 @@
         {
           "position": "Car Thief",
           "weight": 0.509,
-          "min_cpr": 75
+          "min_cpr": 65
         },
         {
           "position": "Imitator",
           "weight": 0.2711,
-          "min_cpr": 75
+          "min_cpr": 65
         },
         {
           "position": "Hustler #1",
