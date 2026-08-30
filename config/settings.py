@@ -96,3 +96,9 @@ class Settings:
         oc_delay_channel_env = os.environ.get("TORN_DISCORD_OC_DELAY_CHANNEL_ID", "").strip()
         self.discord_oc_delay_channel_id = int(oc_delay_channel_env) if oc_delay_channel_env else None
         self.discord_oc_delay_poll_seconds = int(os.environ.get("TORN_DISCORD_OC_DELAY_POLL_SECONDS", "60"))
+
+        # Shoplifting Jewelry Store watcher
+        self.shoplifting_api_key = os.environ.get("TORN_SHOPLIFTING_API_KEY", "").strip()
+        self.shoplifting_webhook_url = os.environ.get("TORN_SHOPLIFTING_WEBHOOK_URL", "").strip()
+        self.shoplifting_mention = os.environ.get("TORN_SHOPLIFTING_MENTION", "").strip()
+        self.shoplifting_poll_seconds = int(os.environ.get("TORN_SHOPLIFTING_POLL_SECONDS", "30"))

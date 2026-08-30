@@ -519,6 +519,21 @@ def build_parser():
         help="Total seconds to run (None = infinite)"
     )
 
+    shoplifting = sub.add_parser("shoplifting")
+
+    shoplifting.add_argument(
+        "action",
+        nargs="?",
+        default="start",
+        choices=["start", "stop", "status"],
+        help="start: poll Jewelry Store (default). stop: disable its running watcher. status: show enabled state."
+    )
+
+    shoplifting.add_argument("--api-key", dest="api_key", type=str, default=None)
+    shoplifting.add_argument("--webhook-url", dest="webhook_url", type=str, default=None)
+    shoplifting.add_argument("--mention", dest="mention", type=str, default=None)
+    shoplifting.add_argument("--poll-seconds", dest="poll_seconds", type=int, default=None)
+
     prices = sub.add_parser("prices")
 
     prices.add_argument(

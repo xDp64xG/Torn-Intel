@@ -145,6 +145,16 @@ class CLI:
                 duration=args.duration,
             )
 
+        elif args.command == "shoplifting":
+
+            self.engine.manage_shoplifting(
+                action=args.action,
+                api_key=getattr(args, "api_key", None),
+                webhook_url=getattr(args, "webhook_url", None),
+                mention=getattr(args, "mention", None),
+                poll_seconds=getattr(args, "poll_seconds", None),
+            )
+
         elif args.command == "prices":
 
             self.engine.manage_prices(

@@ -714,6 +714,27 @@ class TornIntel:
 
     #######################################################
 
+    def manage_shoplifting(self, action, api_key=None, webhook_url=None, mention=None, poll_seconds=None):
+
+        watcher = self.services.shoplifting_watcher
+        if action == "start":
+            watcher.start(
+                api_key=api_key,
+                webhook_url=webhook_url,
+                mention=mention,
+                poll_seconds=poll_seconds,
+            )
+            return
+        if action == "stop":
+            watcher.stop()
+            return
+        if action == "status":
+            print(watcher.status())
+            return
+        raise ValueError(f"Unknown shoplifting action '{action}'")
+
+    #######################################################
+
     def manage_crime_rules(self, action, tier=None, crime_name=None, position=None, min_cpr=None):
 
         report = self.reports.get("crimes")

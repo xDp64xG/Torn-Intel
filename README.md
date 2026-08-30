@@ -24,6 +24,8 @@ Copy `.env.example` to `.env` and add your API key(s):
 # .env
 TORN_API_KEYS=YourKey1Here,YourKey2Here,YourKey3Here
 TORN_FACTION_ID=12345
+TORN_SHOPLIFTING_WEBHOOK_URL=https://discord.com/api/webhooks/...
+TORN_SHOPLIFTING_MENTION=<@&123456789012345678>
 ```
 
 Multiple keys are recommended. The system automatically rotates through them and backs off when one hits a rate limit. The faction ID is used to filter leaderboards to your members only — find it in the Torn URL on your faction page.
@@ -98,6 +100,7 @@ Discord commands:
 - Slash: `/ti_revive_cancel` cancel your pending revive request.
 - Slash: `/ti_revive_channel` set or view the active revive channel.
 - Slash: `/ti_oc_delay_channel` set or view the OC delay alert channel.
+- Slash: `/ti_shoplifting` start, stop, test, or view Jewelry Store shoplifting alerts.
 - Prefix: `!ti <command>` to run any CLI command string.
 - Long-running jobs: `!ti_bg`, `!ti_jobs`, `!ti_stop`, `!ti_output` (slash equivalents included).
 
@@ -194,6 +197,37 @@ python main.py watch attacks --cooldown 10 --duration 28800
 ```
 
 **Recommended for ongoing data collection.** Leave this running in a terminal to capture all future chain activity in real time.
+
+---
+
+### `shoplifting` - Jewelry Store alert
+
+```bash
+python main.py shoplifting start
+```
+
+Polls Torn's `shoplifting` selection and sends a Discord webhook alert when both Jewelry Store obstacles are disabled. One alert is sent when the store becomes clear; it will not repeat until the store is blocked and becomes clear again.
+
+Configure the webhook and optional mention in `.env`:
+
+```bash
+TORN_SHOPLIFTING_API_KEY=YourTornApiKey
+TORN_SHOPLIFTING_WEBHOOK_URL=https://discord.com/api/webhooks/...
+TORN_SHOPLIFTING_MENTION=<@123456789012345678>
+TORN_SHOPLIFTING_POLL_SECONDS=30
+```
+
+`TORN_SHOPLIFTING_API_KEY` falls back to `TORN_API_KEY` or the first `TORN_API_KEYS` value. Use `<@user-id>` to mention a user or `<@&role-id>` to mention a role. You can also supply `--api-key`, `--webhook-url`, `--mention`, and `--poll-seconds` to `start`.
+
+When the Discord bot is running, use the Discord-native `/ti_shoplifting` command instead of a webhook. Select `start`, enter the alert `channel` as a channel mention such as `<#123456789012345678>` (or its ID), and optionally set `message` and `poll_seconds`. The custom message can include user or role mentions. Select `test` to send the custom message immediately, `status` to view the stored configuration, or `stop` to disable polling.
+
+```bash
+# Disable a watcher running in another terminal.
+python main.py shoplifting stop
+
+# Check whether it is enabled.
+python main.py shoplifting status
+```
 
 ---
 

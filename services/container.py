@@ -23,6 +23,7 @@ from services.crime_service import CrimeService
 from services.revive_service import ReviveService
 from services.revive_request_listener import ReviveRequestListener
 from services.item_price_service import ItemPriceService
+from services.shoplifting_watcher import ShopliftingWatcher
 from repositories.armoury_news_repository import ArmouryNewsRepository
 from repositories.item_price_repository import ItemPriceRepository
 from core.events import EventBus
@@ -116,6 +117,12 @@ class ServiceContainer:
             gateway=self.armoury_gateway,
             market_gateway=self.gateway,
             database=self.database,
+            logger=self.logger,
+        )
+
+        self.shoplifting_watcher = ShopliftingWatcher(
+            settings=self.settings,
+            http_client=self.http,
             logger=self.logger,
         )
 

@@ -18,6 +18,7 @@ import time
 import uuid
 import re
 import asyncio
+import json
 import io
 import csv
 import math
@@ -31,6 +32,7 @@ from urllib.error import HTTPError
 
 
 from config.settings import Settings
+from services.shoplifting_watcher import ShopliftingWatcher
 
 
 EMBED_TEXT_LIMIT = 3900
@@ -1084,6 +1086,7 @@ def serve_discord_bot(token: str, prefix: str = "!ti", guild_id: int | None = No
     revive_watcher_task = None
     revive_request_alert_task = None
     oc_delay_alert_task = None
+    shoplifting_alert_task = None
 
     def embed_color(ok: bool):
         return 0x2ecc71 if ok else 0xe74c3c
@@ -1116,6 +1119,34 @@ def serve_discord_bot(token: str, prefix: str = "!ti", guild_id: int | None = No
         if settings.discord_oc_delay_channel_id:
             return int(settings.discord_oc_delay_channel_id)
         return int(default_channel_id) if default_channel_id is not None else None
+
+    def resolve_shoplifting_channel_id():
+        configured = revive_store.get_setting("shoplifting_channel_id")
+        return int(configured) if configured and str(configured).isdigit() else None
+
+    def shoplifting_is_enabled():
+        return revive_store.get_setting("shoplifting_enabled") == "1"
+
+    def fetch_shoplifting():
+        api_key = settings.shoplifting_api_key or settings.api_key
+        if not api_key:
+            raise RuntimeError("No Torn API key configured for shoplifting.")
+        url = f"{str(settings.base_url).rstrip('/')}/torn/?{urlencode({'key': api_key, 'comment': settings.comment, 'selections': 'shoplifting'})}"
+        request = Request(
+            url,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "TornIntel-DiscordBot/1.0",
+            },
+        )
+        try:
+            with urlopen(request, timeout=settings.request_timeout) as response:
+                return json.loads(response.read().decode("utf-8", errors="replace") or "{}")
+        except HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace").strip()
+            raise RuntimeError(
+                f"Torn rejected the shoplifting request ({exc.code}): {detail[:300] or exc.reason}"
+            ) from exc
 
     async def resolve_revive_channel(interaction: discord.Interaction):
         channel_id = resolve_revive_channel_id(interaction.channel_id)
@@ -2079,6 +2110,44 @@ def serve_discord_bot(token: str, prefix: str = "!ti", guild_id: int | None = No
 
             await asyncio.sleep(poll_seconds)
 
+    async def shoplifting_alert_watcher():
+        was_clear = False
+
+        while not bot.is_closed():
+            try:
+                if not shoplifting_is_enabled():
+                    was_clear = False
+                    await asyncio.sleep(5)
+                    continue
+
+                channel_id = resolve_shoplifting_channel_id()
+                if channel_id is None:
+                    if logger:
+                        logger.warning("Shoplifting watcher disabled because no alert channel is configured")
+                    revive_store.set_setting("shoplifting_enabled", "0")
+                    continue
+
+                payload = await asyncio.to_thread(fetch_shoplifting)
+                is_clear = ShopliftingWatcher._jewelry_store_is_clear(payload)
+                if is_clear and not was_clear:
+                    channel = bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
+                    message = ShopliftingWatcher.alert_message(
+                        revive_store.get_setting("shoplifting_alert_message")
+                    )
+                    await channel.send(
+                        message,
+                        allowed_mentions=discord.AllowedMentions(users=True, roles=True, everyone=False),
+                    )
+                    if logger:
+                        logger.info(f"Posted shoplifting alert to channel {channel_id}")
+                was_clear = is_clear
+            except Exception as exc:
+                if logger:
+                    logger.warning(f"Shoplifting watcher error: {type(exc).__name__}: {exc}")
+
+            poll_seconds = max(5, int(revive_store.get_setting("shoplifting_poll_seconds") or settings.shoplifting_poll_seconds))
+            await asyncio.sleep(poll_seconds)
+
     async def report_type_autocomplete(interaction, current: str):
         module = str(getattr(interaction.namespace, "module", "") or "")
         types = REPORT_TYPES_BY_MODULE.get(module, [])
@@ -2104,7 +2173,7 @@ def serve_discord_bot(token: str, prefix: str = "!ti", guild_id: int | None = No
 
     @bot.event
     async def on_ready():
-        nonlocal revive_watcher_task, revive_request_alert_task, oc_delay_alert_task
+        nonlocal revive_watcher_task, revive_request_alert_task, oc_delay_alert_task, shoplifting_alert_task
         if logger:
             logger.success(f"Discord bot logged in as {bot.user}")
             try:
@@ -2162,6 +2231,11 @@ def serve_discord_bot(token: str, prefix: str = "!ti", guild_id: int | None = No
             oc_delay_alert_task = asyncio.create_task(oc_delay_alert_watcher())
             if logger:
                 logger.info("Started OC delay alert watcher task")
+
+        if shoplifting_alert_task is None or shoplifting_alert_task.done():
+            shoplifting_alert_task = asyncio.create_task(shoplifting_alert_watcher())
+            if logger:
+                logger.info("Started shoplifting alert watcher task")
 
     if allow_prefix_commands:
         @bot.command(name="ti")
@@ -2560,6 +2634,67 @@ def serve_discord_bot(token: str, prefix: str = "!ti", guild_id: int | None = No
                 text="No explicit OC delay channel set. Alerts are disabled until a channel is configured.",
                 ok=True,
             )
+
+    @bot.tree.command(name="ti_shoplifting", description="Configure Jewelry Store shoplifting alerts")
+    @app_commands.describe(
+        action="start, stop, status, or test",
+        channel="Channel that receives alerts; required for start unless already configured",
+        message="Custom alert message; supports user and role mentions",
+        poll_seconds="Polling interval in seconds (minimum 5)",
+    )
+    @app_commands.choices(action=[
+        app_commands.Choice(name="Start", value="start"),
+        app_commands.Choice(name="Stop", value="stop"),
+        app_commands.Choice(name="Status", value="status"),
+        app_commands.Choice(name="Test alert", value="test"),
+    ])
+    async def ti_shoplifting_slash(
+        interaction: discord.Interaction,
+        action: str,
+        channel: str | None = None,
+        message: str | None = None,
+        poll_seconds: int | None = None,
+    ):
+        await interaction.response.defer(thinking=False)
+        action_value = action
+        configured_channel_id = resolve_shoplifting_channel_id()
+        requested_channel_id = _parse_channel_id(channel) if channel else None
+
+        if action_value == "start":
+            target_channel_id = requested_channel_id or configured_channel_id
+            target_channel = bot.get_channel(target_channel_id) if target_channel_id else None
+            if target_channel is None:
+                await send_embed_chunks(interaction.followup.send, title="Shoplifting Alert Setup Failed", text="Choose an alert channel when starting the watcher.", ok=False)
+                return
+            revive_store.set_setting("shoplifting_channel_id", str(int(target_channel.id)))
+            if message is not None:
+                revive_store.set_setting("shoplifting_alert_message", ShopliftingWatcher.alert_message(message))
+            if poll_seconds is not None:
+                revive_store.set_setting("shoplifting_poll_seconds", str(max(5, int(poll_seconds))))
+            revive_store.set_setting("shoplifting_enabled", "1")
+            await send_embed_chunks(interaction.followup.send, title="Shoplifting Alert Enabled", text=f"Jewelry Store alerts will post in <#{int(target_channel.id)}>.", ok=True)
+            return
+
+        if action_value == "stop":
+            revive_store.set_setting("shoplifting_enabled", "0")
+            await send_embed_chunks(interaction.followup.send, title="Shoplifting Alert Disabled", text="Jewelry Store polling has stopped.", ok=True)
+            return
+
+        target_channel_id = requested_channel_id or configured_channel_id
+        target_channel = bot.get_channel(target_channel_id) if target_channel_id else None
+        if action_value == "test":
+            if target_channel is None:
+                await send_embed_chunks(interaction.followup.send, title="Shoplifting Test Failed", text="Choose a channel or start the watcher first. A test alert does not call Torn.", ok=False)
+                return
+            alert_text = ShopliftingWatcher.alert_message(message or revive_store.get_setting("shoplifting_alert_message"))
+            await target_channel.send(alert_text, allowed_mentions=discord.AllowedMentions(users=True, roles=True, everyone=False))
+            await send_embed_chunks(interaction.followup.send, title="Shoplifting Test Alert Sent", text=f"Sent a test alert to <#{int(target_channel.id)}>.", ok=True)
+            return
+
+        current_message = ShopliftingWatcher.alert_message(revive_store.get_setting("shoplifting_alert_message"))
+        status = "enabled" if shoplifting_is_enabled() else "disabled"
+        channel_text = f"<#{configured_channel_id}>" if configured_channel_id else "not configured"
+        await send_embed_chunks(interaction.followup.send, title="Shoplifting Alert Status", text=f"Status: {status}\nChannel: {channel_text}\nMessage: {current_message}", ok=True)
 
     @bot.tree.command(name="ti_report", description="Structured report command with autocomplete")
     @app_commands.describe(
