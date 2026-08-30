@@ -86,117 +86,138 @@
   },
   "crimes": [
     {
-      "name": "Pet Project",
-      "tier": 1,
-      "roles": [
-        { "position": "Kidnapper", "weight": 0.309, "min_cpr": 0 },
-        { "position": "Muscle", "weight": 0.326, "min_cpr": 0 },
-        { "position": "Picklock", "weight": 0.364, "min_cpr": 0 }
-      ]
-    },
-    {
       "name": "First Aid and Abet",
       "tier": 1,
       "roles": [
-        { "position": "Pickpocket", "weight": 0.437, "min_cpr": 0 },
-        { "position": "Decoy", "weight": 0.307, "min_cpr": 0 },
-        { "position": "Picklock", "weight": 0.26, "min_cpr": 0 }
+        {
+          "position": "Pickpocket",
+          "weight": 0.437,
+          "min_cpr": 0
+        },
+        {
+          "position": "Decoy",
+          "weight": 0.307,
+          "min_cpr": 0
+        },
+        {
+          "position": "Picklock",
+          "weight": 0.26,
+          "min_cpr": 0
+        }
       ]
     },
     {
       "name": "Mob Mentality",
       "tier": 1,
       "roles": [
-        { "position": "Looter #1", "weight": 0.34, "min_cpr": 0 },
-        { "position": "Looter #2", "weight": 0.265, "min_cpr": 0 },
-        { "position": "Looter #3", "weight": 0.184, "min_cpr": 0 },
-        { "position": "Looter #4", "weight": 0.212, "min_cpr": 0 }
+        {
+          "position": "Looter #1",
+          "weight": 0.34,
+          "min_cpr": 0
+        },
+        {
+          "position": "Looter #2",
+          "weight": 0.265,
+          "min_cpr": 0
+        },
+        {
+          "position": "Looter #3",
+          "weight": 0.184,
+          "min_cpr": 0
+        },
+        {
+          "position": "Looter #4",
+          "weight": 0.212,
+          "min_cpr": 0
+        }
       ]
     },
     {
-      "name": "Thou Shalt Not Steal",
-      "tier": 2,
+      "name": "Pet Project",
+      "tier": 1,
       "roles": [
-        { "position": "Thief", "weight": 0.124, "min_cpr": 60 },
-        { "position": "Picklock", "weight": 0.497, "min_cpr": 60 },
-        { "position": "Pickpocket", "weight": 0.379, "min_cpr": 60 }
+        {
+          "position": "Kidnapper",
+          "weight": 0.309,
+          "min_cpr": 0
+        },
+        {
+          "position": "Muscle",
+          "weight": 0.326,
+          "min_cpr": 0
+        },
+        {
+          "position": "Picklock",
+          "weight": 0.364,
+          "min_cpr": 0
+        }
       ]
     },
     {
       "name": "Best of the Lot",
       "tier": 2,
       "roles": [
-        { "position": "Car Thief", "weight": 0.195, "min_cpr": 60 },
-        { "position": "Picklock", "weight": 0.207, "min_cpr": 60 },
-        { "position": "Muscle", "weight": 0.437, "min_cpr": 60 },
-        { "position": "Imitator", "weight": 0.161, "min_cpr": 60 }
+        {
+          "position": "Car Thief",
+          "weight": 0.195,
+          "min_cpr": 60
+        },
+        {
+          "position": "Picklock",
+          "weight": 0.207,
+          "min_cpr": 60
+        },
+        {
+          "position": "Muscle",
+          "weight": 0.437,
+          "min_cpr": 60
+        },
+        {
+          "position": "Imitator",
+          "weight": 0.161,
+          "min_cpr": 60
+        }
       ]
     },
     {
       "name": "Cash Me If You Can",
       "tier": 2,
       "roles": [
-        { "position": "Lookout", "weight": 0.178, "min_cpr": 60 },
-        { "position": "Thief #1", "weight": 0.28, "min_cpr": 60 },
-        { "position": "Thief #2", "weight": 0.542, "min_cpr": 60 }
-      ]
-    },
-    {
-      "name": "Smoke and Wing Mirrors",
-      "tier": 3,
-      "success_chance": 0.728,
-      "roles": [
         {
-          "position": "Car Thief",
-          "weight": 0.509,
-          "min_cpr": 65
+          "position": "Lookout",
+          "weight": 0.178,
+          "min_cpr": 60
         },
         {
-          "position": "Imitator",
-          "weight": 0.2711,
-          "min_cpr": 65
+          "position": "Thief #1",
+          "weight": 0.28,
+          "min_cpr": 60
         },
         {
-          "position": "Hustler #1",
-          "weight": 0.09,
-          "min_cpr": 65
-        },
-        {
-          "position": "Hustler #2",
-          "weight": 0.13,
-          "min_cpr": 65
+          "position": "Thief #2",
+          "weight": 0.542,
+          "min_cpr": 60
         }
       ]
     },
     {
-      "name": "Market Forces",
-      "tier": 3,
-      "success_chance": 0.7149,
+      "name": "Thou Shalt Not Steal",
+      "tier": 2,
       "roles": [
         {
-          "position": "Enforcer",
-          "weight": 0.294,
-          "min_cpr": 65
+          "position": "Thief",
+          "weight": 0.124,
+          "min_cpr": 60
         },
         {
-          "position": "Negotiator",
-          "weight": 0.2723,
-          "min_cpr": 65
+          "position": "Picklock",
+          "weight": 0.497,
+          "min_cpr": 60
         },
         {
-          "position": "Lookout",
-          "weight": 0.1637,
-          "min_cpr": 65
-        },
-        {
-          "position": "Arsonist",
-          "weight": 0.0446,
-          "min_cpr": 65
-        },
-        {
-          "position": "Muscle",
-          "weight": 0.2255,
-          "min_cpr": 65
+          "position": "Pickpocket",
+          "weight": 0.379,
+          "min_cpr": 60
         }
       ]
     },
@@ -213,12 +234,12 @@
         {
           "position": "Imitator #2",
           "weight": 0.2746,
-          "min_cpr": 65
+          "min_cpr": 75
         },
         {
           "position": "Imitator #3",
           "weight": 0.4132,
-          "min_cpr": 65
+          "min_cpr": 75
         },
         {
           "position": "Looter #1",
@@ -228,7 +249,7 @@
         {
           "position": "Looter #2",
           "weight": 0.0,
-          "min_cpr": 65
+          "min_cpr": 40
         },
         {
           "position": "Looter #3",
@@ -238,28 +259,60 @@
       ]
     },
     {
-      "name": "Snow Blind",
-      "tier": 4,
-      "success_chance": 0.7331,
+      "name": "Market Forces",
+      "tier": 3,
+      "success_chance": 0.7149,
       "roles": [
         {
-          "position": "Hustler",
-          "weight": 0.4841,
+          "position": "Enforcer",
+          "weight": 0.294,
+          "min_cpr": 75
+        },
+        {
+          "position": "Negotiator",
+          "weight": 0.2723,
+          "min_cpr": 75
+        },
+        {
+          "position": "Lookout",
+          "weight": 0.1637,
           "min_cpr": 70
+        },
+        {
+          "position": "Arsonist",
+          "weight": 0.0446,
+          "min_cpr": 40
+        },
+        {
+          "position": "Muscle",
+          "weight": 0.2255,
+          "min_cpr": 70
+        }
+      ]
+    },
+    {
+      "name": "Smoke and Wing Mirrors",
+      "tier": 3,
+      "success_chance": 0.728,
+      "roles": [
+        {
+          "position": "Car Thief",
+          "weight": 0.509,
+          "min_cpr": 75
         },
         {
           "position": "Imitator",
-          "weight": 0.3557,
-          "min_cpr": 70
+          "weight": 0.2711,
+          "min_cpr": 75
         },
         {
-          "position": "Muscle #1",
-          "weight": 0.0851,
+          "position": "Hustler #1",
+          "weight": 0.09,
           "min_cpr": 65
         },
         {
-          "position": "Muscle #2",
-          "weight": 0.0851,
+          "position": "Hustler #2",
+          "weight": 0.13,
           "min_cpr": 65
         }
       ]
@@ -272,7 +325,7 @@
         {
           "position": "Muscle",
           "weight": 0.479,
-          "min_cpr": 70
+          "min_cpr": 75
         },
         {
           "position": "Hustler",
@@ -287,6 +340,33 @@
         {
           "position": "Robber #2",
           "weight": 0.2368,
+          "min_cpr": 70
+        }
+      ]
+    },
+    {
+      "name": "Snow Blind",
+      "tier": 4,
+      "success_chance": 0.7331,
+      "roles": [
+        {
+          "position": "Hustler",
+          "weight": 0.4841,
+          "min_cpr": 75
+        },
+        {
+          "position": "Imitator",
+          "weight": 0.3557,
+          "min_cpr": 75
+        },
+        {
+          "position": "Muscle #1",
+          "weight": 0.0851,
+          "min_cpr": 65
+        },
+        {
+          "position": "Muscle #2",
+          "weight": 0.0851,
           "min_cpr": 65
         }
       ]
@@ -309,44 +389,22 @@
         {
           "position": "Muscle #2",
           "weight": 0.0266,
-          "min_cpr": 60
+          "min_cpr": 40
         },
         {
           "position": "Muscle #3",
           "weight": 0.0917,
-          "min_cpr": 60
+          "min_cpr": 65
         },
         {
           "position": "Lookout",
           "weight": 0.0619,
-          "min_cpr": 60
+          "min_cpr": 65
         },
         {
           "position": "Sniper",
           "weight": 0.463,
-          "min_cpr": 70
-        }
-      ]
-    },
-    {
-      "name": "Guardian Angels",
-      "tier": 5,
-      "success_chance": 0.75,
-      "roles": [
-        {
-          "position": "Enforcer",
-          "weight": 0.274,
-          "min_cpr": 70
-        },
-        {
-          "position": "Hustler",
-          "weight": 0.421,
-          "min_cpr": 70
-        },
-        {
-          "position": "Engineer",
-          "weight": 0.3049,
-          "min_cpr": 70
+          "min_cpr": 75
         }
       ]
     },
@@ -358,12 +416,12 @@
         {
           "position": "Robber",
           "weight": 0.3595,
-          "min_cpr": 70
+          "min_cpr": 75
         },
         {
           "position": "Looter",
           "weight": 0.07,
-          "min_cpr": 60
+          "min_cpr": 65
         },
         {
           "position": "Hacker",
@@ -373,34 +431,34 @@
         {
           "position": "Picklock",
           "weight": 0.1654,
-          "min_cpr": 65
+          "min_cpr": 70
         },
         {
           "position": "Engineer",
           "weight": 0.2839,
-          "min_cpr": 70
+          "min_cpr": 75
         }
       ]
     },
     {
-      "name": "No Reserve",
+      "name": "Guardian Angels",
       "tier": 5,
       "success_chance": 0.75,
       "roles": [
         {
-          "position": "Car Thief",
-          "weight": 0.3051,
-          "min_cpr": 70
+          "position": "Enforcer",
+          "weight": 0.274,
+          "min_cpr": 75
         },
         {
-          "position": "Techie",
-          "weight": 0.3837,
-          "min_cpr": 70
+          "position": "Hustler",
+          "weight": 0.421,
+          "min_cpr": 75
         },
         {
           "position": "Engineer",
-          "weight": 0.3112,
-          "min_cpr": 70
+          "weight": 0.3049,
+          "min_cpr": 75
         }
       ]
     },
@@ -412,17 +470,39 @@
         {
           "position": "Muscle #1",
           "weight": 0.3087,
-          "min_cpr": 70
+          "min_cpr": 75
         },
         {
           "position": "Muscle #2",
           "weight": 0.4215,
-          "min_cpr": 70
+          "min_cpr": 75
         },
         {
           "position": "Enforcer",
           "weight": 0.2698,
-          "min_cpr": 70
+          "min_cpr": 75
+        }
+      ]
+    },
+    {
+      "name": "No Reserve",
+      "tier": 5,
+      "success_chance": 0.75,
+      "roles": [
+        {
+          "position": "Car Thief",
+          "weight": 0.3051,
+          "min_cpr": 75
+        },
+        {
+          "position": "Techie",
+          "weight": 0.3837,
+          "min_cpr": 75
+        },
+        {
+          "position": "Engineer",
+          "weight": 0.3112,
+          "min_cpr": 75
         }
       ]
     },
@@ -434,7 +514,7 @@
         {
           "position": "Bomber #1",
           "weight": 0.0785,
-          "min_cpr": 60
+          "min_cpr": 65
         },
         {
           "position": "Bomber #2",
@@ -444,7 +524,7 @@
         {
           "position": "Robber #1",
           "weight": 0.071,
-          "min_cpr": 60
+          "min_cpr": 65
         },
         {
           "position": "Robber #2",
@@ -454,11 +534,43 @@
         {
           "position": "Robber #3",
           "weight": 0.3167,
-          "min_cpr": 70
+          "min_cpr": 75
         },
         {
           "position": "Driver",
           "weight": 0.1254,
+          "min_cpr": 65
+        }
+      ]
+    },
+    {
+      "name": "Dish It Out",
+      "tier": 6,
+      "success_chance": 0.7126,
+      "roles": [
+        {
+          "position": "Assassin",
+          "weight": 0.3734,
+          "min_cpr": 75
+        },
+        {
+          "position": "Muscle",
+          "weight": 0.2524,
+          "min_cpr": 75
+        },
+        {
+          "position": "Saboteur #1",
+          "weight": 0.1464,
+          "min_cpr": 65
+        },
+        {
+          "position": "Saboteur #2",
+          "weight": 0.0891,
+          "min_cpr": 65
+        },
+        {
+          "position": "Engineer",
+          "weight": 0.1387,
           "min_cpr": 65
         }
       ]
@@ -471,49 +583,17 @@
         {
           "position": "Techie",
           "weight": 0.2901,
-          "min_cpr": 70
+          "min_cpr": 75
         },
         {
           "position": "Negotiator",
           "weight": 0.3413,
-          "min_cpr": 70
+          "min_cpr": 75
         },
         {
           "position": "Imitator",
           "weight": 0.3686,
-          "min_cpr": 70
-        }
-      ]
-    },
-    {
-      "name": "Dish It Out",
-      "tier": 6,
-      "success_chance": 0.7126,
-      "roles": [
-        {
-          "position": "Assassin",
-          "weight": 0.3734,
-          "min_cpr": 70
-        },
-        {
-          "position": "Muscle",
-          "weight": 0.2524,
-          "min_cpr": 70
-        },
-        {
-          "position": "Saboteur #1",
-          "weight": 0.1464,
-          "min_cpr": 65
-        },
-        {
-          "position": "Saboteur #2",
-          "weight": 0.0891,
-          "min_cpr": 60
-        },
-        {
-          "position": "Engineer",
-          "weight": 0.1387,
-          "min_cpr": 65
+          "min_cpr": 75
         }
       ]
     },
@@ -525,12 +605,12 @@
         {
           "position": "Imitator",
           "weight": 0.1754,
-          "min_cpr": 65
+          "min_cpr": 70
         },
         {
           "position": "Pickpocket",
           "weight": 0.5083,
-          "min_cpr": 70
+          "min_cpr": 75
         },
         {
           "position": "Hacker",
@@ -540,7 +620,7 @@
         {
           "position": "Techie",
           "weight": 0.1715,
-          "min_cpr": 65
+          "min_cpr": 70
         }
       ]
     },
@@ -678,33 +758,6 @@
       ]
     },
     {
-      "name": "Stacking the Deck",
-      "tier": 8,
-      "success_chance": 0.6794,
-      "roles": [
-        {
-          "position": "Cat Burglar",
-          "weight": 0.2343,
-          "min_cpr": 65
-        },
-        {
-          "position": "Driver",
-          "weight": 0.0296,
-          "min_cpr": 40
-        },
-        {
-          "position": "Hacker",
-          "weight": 0.2544,
-          "min_cpr": 70
-        },
-        {
-          "position": "Imitator",
-          "weight": 0.4817,
-          "min_cpr": 70
-        }
-      ]
-    },
-    {
       "name": "Lock Stock",
       "tier": 8,
       "success_chance": 0.6587,
@@ -760,6 +813,33 @@
           "position": "Cat Burglar",
           "weight": 0.1391,
           "min_cpr": 60
+        }
+      ]
+    },
+    {
+      "name": "Stacking the Deck",
+      "tier": 8,
+      "success_chance": 0.6794,
+      "roles": [
+        {
+          "position": "Cat Burglar",
+          "weight": 0.2343,
+          "min_cpr": 65
+        },
+        {
+          "position": "Driver",
+          "weight": 0.0296,
+          "min_cpr": 40
+        },
+        {
+          "position": "Hacker",
+          "weight": 0.2544,
+          "min_cpr": 70
+        },
+        {
+          "position": "Imitator",
+          "weight": 0.4817,
+          "min_cpr": 70
         }
       ]
     },

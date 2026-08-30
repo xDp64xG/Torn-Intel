@@ -20,6 +20,7 @@ import openpyxl
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "Reference" / "OC CRP Table.xlsx"
 TARGET = ROOT / "data" / "oc_crp_table.json"
+SUPPLEMENTAL_CRIMES = ROOT / "data" / "oc_crp_table_gth.json"
 USERSCRIPT = ROOT / "scripts" / "tampermonkey" / "Torn OC CRP Fit.user.js"
 EMBED_PATTERN = re.compile(
     r"(/\* BEGIN EMBEDDED TABLE.*?\*/\n)(.*?)(\n\s*/\* END EMBEDDED TABLE \*/)",
@@ -99,6 +100,24 @@ def parse_crimes(sheet) -> list[dict]:
     return crimes
 
 
+def merge_supplemental_crimes(crimes: list[dict]) -> list[dict]:
+    """Keep structured low-tier crimes that are absent from the workbook."""
+    supplemental = json.loads(SUPPLEMENTAL_CRIMES.read_text(encoding="utf-8"))
+    existing_names = {str(crime["name"]).casefold() for crime in crimes}
+
+    for crime in supplemental.get("crimes", []):
+        if int(crime.get("tier", 0)) > 2 or str(crime.get("name", "")).casefold() in existing_names:
+            continue
+
+        copied = json.loads(json.dumps(crime))
+        if int(copied["tier"]) == 2:
+            for role in copied.get("roles", []):
+                role["min_cpr"] = 60
+        crimes.append(copied)
+
+    return sorted(crimes, key=lambda crime: (int(crime["tier"]), str(crime["name"])))
+
+
 def embed_in_userscript(payload: dict) -> None:
     """Keep the userscript's offline copy of the table in sync with the JSON."""
     compact = json.dumps(
@@ -120,7 +139,7 @@ def main() -> None:
         "weight_bands": WEIGHT_BANDS,
         "tier_adjustments": TIER_ADJUSTMENTS,
         "tier_policy": parse_tier_policy(workbook["Sheet1"]),
-        "crimes": parse_crimes(workbook["Sheet2"]),
+        "crimes": merge_supplemental_crimes(parse_crimes(workbook["Sheet2"])),
     }
 
     TARGET.write_text(json.dumps(payload, indent=2), encoding="utf-8")
