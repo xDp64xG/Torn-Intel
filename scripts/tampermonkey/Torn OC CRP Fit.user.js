@@ -39,14 +39,14 @@
     },
     custom: { label: 'Custom URL', url: null }
   };
-  const OFFLINE_EXTRA_CRIMES = [
-    { name: 'Pet Project', tier: 1, roles: [{ position: 'Kidnapper', weight: 0.309, min_cpr: 0 }, { position: 'Muscle', weight: 0.326, min_cpr: 0 }, { position: 'Picklock', weight: 0.364, min_cpr: 0 }] },
-    { name: 'First Aid and Abet', tier: 1, roles: [{ position: 'Pickpocket', weight: 0.437, min_cpr: 0 }, { position: 'Decoy', weight: 0.307, min_cpr: 0 }, { position: 'Picklock', weight: 0.26, min_cpr: 0 }] },
-    { name: 'Mob Mentality', tier: 1, roles: [{ position: 'Looter #1', weight: 0.34, min_cpr: 0 }, { position: 'Looter #2', weight: 0.265, min_cpr: 0 }, { position: 'Looter #3', weight: 0.184, min_cpr: 0 }, { position: 'Looter #4', weight: 0.212, min_cpr: 0 }] },
-    { name: 'Thou Shalt Not Steal', tier: 2, roles: [{ position: 'Thief', weight: 0.124, min_cpr: 70 }, { position: 'Picklock', weight: 0.497, min_cpr: 70 }, { position: 'Pickpocket', weight: 0.379, min_cpr: 70 }] },
-    { name: 'Best of the Lot', tier: 2, roles: [{ position: 'Car Thief', weight: 0.195, min_cpr: 70 }, { position: 'Picklock', weight: 0.207, min_cpr: 70 }, { position: 'Muscle', weight: 0.437, min_cpr: 70 }, { position: 'Imitator', weight: 0.161, min_cpr: 70 }] },
-    { name: 'Cash Me If You Can', tier: 2, roles: [{ position: 'Lookout', weight: 0.178, min_cpr: 70 }, { position: 'Thief #1', weight: 0.28, min_cpr: 70 }, { position: 'Thief #2', weight: 0.542, min_cpr: 70 }] }
-  ];
+  //const OFFLINE_EXTRA_CRIMES = [
+  //  { name: 'Pet Project', tier: 1, roles: [{ position: 'Kidnapper', weight: 0.309, min_cpr: 0 }, { position: 'Muscle', weight: 0.326, min_cpr: 0 }, { position: 'Picklock', weight: 0.364, min_cpr: 0 }] },
+  //  { name: 'First Aid and Abet', tier: 1, roles: [{ position: 'Pickpocket', weight: 0.437, min_cpr: 0 }, { position: 'Decoy', weight: 0.307, min_cpr: 0 }, { position: 'Picklock', weight: 0.26, min_cpr: 0 }] },
+  //  { name: 'Mob Mentality', tier: 1, roles: [{ position: 'Looter #1', weight: 0.34, min_cpr: 0 }, { position: 'Looter #2', weight: 0.265, min_cpr: 0 }, { position: 'Looter #3', weight: 0.184, min_cpr: 0 }, { position: 'Looter #4', weight: 0.212, min_cpr: 0 }] },
+  //  { name: 'Thou Shalt Not Steal', tier: 2, roles: [{ position: 'Thief', weight: 0.124, min_cpr: 70 }, { position: 'Picklock', weight: 0.497, min_cpr: 70 }, { position: 'Pickpocket', weight: 0.379, min_cpr: 70 }] },
+  //  { name: 'Best of the Lot', tier: 2, roles: [{ position: 'Car Thief', weight: 0.195, min_cpr: 70 }, { position: 'Picklock', weight: 0.207, min_cpr: 70 }, { position: 'Muscle', weight: 0.437, min_cpr: 70 }, { position: 'Imitator', weight: 0.161, min_cpr: 70 }] },
+  //  { name: 'Cash Me If You Can', tier: 2, roles: [{ position: 'Lookout', weight: 0.178, min_cpr: 70 }, { position: 'Thief #1', weight: 0.28, min_cpr: 70 }, { position: 'Thief #2', weight: 0.542, min_cpr: 70 }] }
+  //];
   const DESKTOP_SLOT_HINTS = '.tt-oc-highlight, [class*="waitingJoin"]';
   const MOBILE_SLOT_CANDIDATES = '[class*="slot"], [class*="position"], [class*="member"]';
   const CRIME_LIST = '#faction-crimes-root';
@@ -200,9 +200,10 @@
     table = data;
     crimesByName = new Map();
     const crimes = [...(data.crimes || [])];
-    OFFLINE_EXTRA_CRIMES.forEach(crime => {
-      if (!crimes.some(existing => norm(existing.name) === norm(crime.name))) crimes.push(crime);
-    });
+    // Extra Crimes?
+    //OFFLINE_EXTRA_CRIMES.forEach(crime => {
+    //  if (!crimes.some(existing => norm(existing.name) === norm(crime.name))) crimes.push(crime);
+    //});
     table.crimes = crimes;
     crimes.forEach(crime => {
       crimesByName.set(norm(crime.name), crime);
