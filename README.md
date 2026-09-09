@@ -100,7 +100,8 @@ Discord commands:
 - Slash: `/ti_revive_cancel` cancel your pending revive request.
 - Slash: `/ti_revive_channel` set or view the active revive channel.
 - Slash: `/ti_oc_delay_channel` set or view the OC delay alert channel.
-- Slash: `/ti_shoplifting` start, stop, test, or view Jewelry Store shoplifting alerts.
+- Slash: `/ti_shoplifting` start, update, stop, test, explain, or view shoplifting alerts per area, with per-area trigger and security filters.
+- Slash: `/ti_reaction_role` post a message that grants roles when members react, with multiple emoji → role bindings per message.
 - Prefix: `!ti <command>` to run any CLI command string.
 - Long-running jobs: `!ti_bg`, `!ti_jobs`, `!ti_stop`, `!ti_output` (slash equivalents included).
 
@@ -113,6 +114,15 @@ Output formatting:
 - When a revive request is fulfilled, the posted request embed is auto-updated to green and shows the reviver name.
 - The Discord bot periodically runs `sync revives --mode live` + `revive_requests reconcile` while active Discord revive requests exist (interval controlled by `TORN_DISCORD_REVIVE_POLL_SECONDS`).
 - The Discord bot can also poll `sync crimes --mode live` and post OC delay start/resolve alerts for flying members when `TORN_DISCORD_OC_DELAY_CHANNEL_ID` or `/ti_oc_delay_channel` is configured.
+
+Reaction roles:
+
+- `/ti_reaction_role action:post channel:<#123> pairs:🔫=<@&111>, 💊=<@&222> message:Pick your alert pings` posts one message, adds every reaction, and stores each emoji → role binding.
+- `pairs` accepts several bindings separated by commas, semicolons, pipes, or newlines, using `=`, `=>`, or `:` between the emoji and the role mention/ID. A single `emoji` + `role` pair also works.
+- `action:add` binds more emoji/role pairs to an existing `message_id` in the given channel; `action:remove` clears one emoji (or the whole message when no emoji is given); `action:list` shows every binding grouped by message.
+- `mode:keep` (default) leaves the reaction in place and removes the role when the member un-reacts.
+- `mode:toggle` clears the member's reaction as soon as it is processed, so reacting again removes the role. This needs **Manage Messages** in the channel and is set per message.
+- The bot needs **Manage Roles** and a role ranked above every granted role.
 
 ### `sync` — Import data from the API
 
@@ -200,13 +210,30 @@ python main.py watch attacks --cooldown 10 --duration 28800
 
 ---
 
-### `shoplifting` - Jewelry Store alert
+### `shoplifting` - shoplifting security alerts
 
 ```bash
 python main.py shoplifting start
 ```
 
-Polls Torn's `shoplifting` selection and sends a Discord webhook alert when both Jewelry Store obstacles are disabled. One alert is sent when the store becomes clear; it will not repeat until the store is blocked and becomes clear again.
+Polls Torn's `shoplifting` selection and sends a Discord webhook alert for every area Torn reports:
+
+| Area | Security | Default trigger | Available triggers |
+| --- | --- | --- | --- |
+| `jewelry_store` | Three cameras, One guard | `all` | `any`, `all`, `cameras`, `guards` |
+| `big_als` | Four cameras, Two guards | `any` | `any`, `all`, `cameras`, `guards` |
+| `pharmacy` | Three cameras, Checkpoint | `any` | `any`, `all`, `cameras`, `checkpoint` |
+| `cyber_force` | Two cameras, One guard | `any` | `any`, `all`, `cameras`, `guards` |
+| `super_store` | Two cameras, Checkpoint | `any` | `any`, `all`, `cameras`, `checkpoint` |
+| `tc_clothing` | One camera, Checkpoint | `any` | `any`, `all`, `cameras`, `checkpoint` |
+| `bits_n_bobs` | Two cameras | `any` | `any` |
+| `sallys_sweet_shop` | One camera | `any` | `any` |
+
+How each trigger behaves:
+
+- `any` — one alert the moment a security item goes down, naming it. It does not repeat while that item stays down, and re-arms once the item comes back up.
+- `all` — a single alert when every watched item is down at the same time. It does not repeat until the area is secured again.
+- `cameras` / `guards` / `checkpoint` — same edge behavior as `any`, but only watches that kind of security. Only offered for areas that actually have it, and only where the area has more than one item.
 
 Configure the webhook and optional mention in `.env`:
 
@@ -217,9 +244,40 @@ TORN_SHOPLIFTING_MENTION=<@123456789012345678>
 TORN_SHOPLIFTING_POLL_SECONDS=30
 ```
 
-`TORN_SHOPLIFTING_API_KEY` falls back to `TORN_API_KEY` or the first `TORN_API_KEYS` value. Use `<@user-id>` to mention a user or `<@&role-id>` to mention a role. You can also supply `--api-key`, `--webhook-url`, `--mention`, and `--poll-seconds` to `start`.
+`TORN_SHOPLIFTING_API_KEY` falls back to `TORN_API_KEY` or the first `TORN_API_KEYS` value. Use `<@user-id>` to mention a user or `<@&role-id>` to mention a role. You can also supply `--api-key`, `--webhook-url`, `--mention`, and `--poll-seconds` to `start`. The CLI watcher uses the default triggers above; use the Discord bot for per-area customization.
 
-When the Discord bot is running, use the Discord-native `/ti_shoplifting` command instead of a webhook. Select `start`, enter the alert `channel` as a channel mention such as `<#123456789012345678>` (or its ID), and optionally set `message` and `poll_seconds`. The custom message can include user or role mentions. Select `test` to send the custom message immediately, `status` to view the stored configuration, or `stop` to disable polling.
+When the Discord bot is running, use the Discord-native `/ti_shoplifting` command instead of a webhook. Each area is configured individually.
+
+Actions:
+
+- `start` — create and enable the alert for an area. Requires `channel` the first time.
+- `update` — change settings on an alert that already exists, without re-entering the channel. Add `force:true` (plus a `channel`) to create and enable it if it does not exist yet.
+- `stop` — disable one area, keeping its settings.
+- `status` — show channel, trigger, watched security, and message. Use area `All areas` for everything.
+- `test` — post the alert text immediately without calling Torn.
+- `explain` — print how each trigger behaves plus the security and valid triggers for the chosen area (or all areas).
+
+Options:
+
+- `channel` — alert destination, as a channel mention such as `<#123456789012345678>` or its ID.
+- `trigger` — autocompletes to only the triggers that area supports, each with a one-line explanation. Invalid values are rejected.
+- `obstacles` — narrows the watch list before the trigger is applied. Autocompletes to that area's real security titles and builds a comma-separated list as you pick. Unknown titles are rejected. Leave blank to watch everything.
+- `message` — custom alert text, may include user or role mentions.
+- `poll_seconds` — shared by all areas, minimum 5.
+
+Examples:
+
+```
+/ti_shoplifting action:start  area:cyber_force channel:<#123> trigger:guards
+/ti_shoplifting action:start  area:super_store channel:<#123> trigger:checkpoint
+/ti_shoplifting action:update area:big_als trigger:all message:@here Big Al's is open
+/ti_shoplifting action:update area:pharmacy channel:<#456> force:true
+/ti_shoplifting action:explain area:all
+```
+
+Changing `trigger` or `obstacles` resets that area's tracking, so the next matching state fires a fresh alert.
+
+Select `test` to send the alert text immediately, `status` with area `All areas` to review every configuration, or `stop` to disable a single area. Changing `trigger` or `obstacles` resets that area's tracking so the next matching state fires a fresh alert.
 
 ```bash
 # Disable a watcher running in another terminal.

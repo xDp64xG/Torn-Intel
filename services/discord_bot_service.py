@@ -1058,6 +1058,58 @@ def _parse_channel_id(channel_ref):
     return None
 
 
+def _parse_role_id(role_ref):
+    text = str(role_ref or "").strip()
+    if not text:
+        return None
+
+    if text.isdigit():
+        return int(text)
+
+    match = re.match(r"^<@&(\d+)>$", text)
+    return int(match.group(1)) if match else None
+
+
+def _normalize_emoji_key(emoji_ref):
+    # Custom emoji collapse to their ID so animated and static forms match; unicode emoji stay as-is.
+    text = str(emoji_ref or "").strip()
+    if not text:
+        return ""
+
+    match = re.match(r"^<a?:\w+:(\d+)>$", text)
+    if match:
+        return match.group(1)
+
+    emoji_id = getattr(emoji_ref, "id", None)
+    return str(emoji_id) if emoji_id else text
+
+
+def _parse_reaction_pairs(raw):
+    """Parse "emoji=@role" entries separated by commas, semicolons, pipes, or newlines."""
+    pairs = []
+    for chunk in re.split(r"[\n,;|]+", str(raw or "")):
+        text = chunk.strip()
+        if not text:
+            continue
+        match = re.match(r"^(.+?)\s*(?:=>|=|:)?\s*(<@&\d+>|\d{5,})$", text)
+        if not match:
+            pairs.append((text, None))
+            continue
+        pairs.append((match.group(1).strip(), match.group(2)))
+    return pairs
+
+
+def _normalize_reaction_entry(entry):
+    """Return (mode, bindings) for a stored message entry, accepting the legacy flat layout."""
+    if not isinstance(entry, dict):
+        return "keep", {}
+    bindings = entry.get("bindings")
+    if isinstance(bindings, dict):
+        mode = str(entry.get("mode") or "keep")
+        return (mode if mode in ("keep", "toggle") else "keep"), dict(bindings)
+    return "keep", dict(entry)
+
+
 def serve_discord_bot(token: str, prefix: str = "!ti", guild_id: int | None = None, timeout_seconds: int = 180, logger=None):
     try:
         import discord
@@ -1120,12 +1172,42 @@ def serve_discord_bot(token: str, prefix: str = "!ti", guild_id: int | None = No
             return int(settings.discord_oc_delay_channel_id)
         return int(default_channel_id) if default_channel_id is not None else None
 
-    def resolve_shoplifting_channel_id():
-        configured = revive_store.get_setting("shoplifting_channel_id")
+    def shoplifting_setting_key(area: str, name: str):
+        # jewelry_store keeps the original key names so existing configuration keeps working.
+        return f"shoplifting_{name}" if area == "jewelry_store" else f"shoplifting_{area}_{name}"
+
+    def resolve_shoplifting_channel_id(area: str = "jewelry_store"):
+        configured = revive_store.get_setting(shoplifting_setting_key(area, "channel_id"))
         return int(configured) if configured and str(configured).isdigit() else None
 
-    def shoplifting_is_enabled():
-        return revive_store.get_setting("shoplifting_enabled") == "1"
+    def shoplifting_is_enabled(area: str = "jewelry_store"):
+        return revive_store.get_setting(shoplifting_setting_key(area, "enabled")) == "1"
+
+    def shoplifting_trigger(area: str):
+        return ShopliftingWatcher.area_trigger(area, revive_store.get_setting(shoplifting_setting_key(area, "trigger")))
+
+    def shoplifting_watch_list(area: str):
+        return ShopliftingWatcher.parse_watch_list(revive_store.get_setting(shoplifting_setting_key(area, "obstacles")))
+
+    def read_reaction_roles():
+        raw = revive_store.get_setting("reaction_roles")
+        if not raw:
+            return {}
+        try:
+            data = json.loads(raw)
+        except (TypeError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def write_reaction_roles(mapping):
+        revive_store.set_setting("reaction_roles", json.dumps(mapping))
+
+    def lookup_reaction_binding(message_id, emoji):
+        mode, bindings = _normalize_reaction_entry(read_reaction_roles().get(str(message_id)))
+        binding = bindings.get(_normalize_emoji_key(emoji))
+        if isinstance(binding, dict):
+            binding = binding.get("role_id")
+        return (int(binding) if binding else None), mode
 
     def fetch_shoplifting():
         api_key = settings.shoplifting_api_key or settings.api_key
@@ -2111,36 +2193,54 @@ def serve_discord_bot(token: str, prefix: str = "!ti", guild_id: int | None = No
             await asyncio.sleep(poll_seconds)
 
     async def shoplifting_alert_watcher():
-        was_clear = False
+        area_states = {area: None for area in ShopliftingWatcher.AREAS}
+        area_configs = {area: None for area in ShopliftingWatcher.AREAS}
 
         while not bot.is_closed():
             try:
-                if not shoplifting_is_enabled():
-                    was_clear = False
+                active_areas = [area for area in ShopliftingWatcher.AREAS if shoplifting_is_enabled(area)]
+                for area in ShopliftingWatcher.AREAS:
+                    if area not in active_areas:
+                        area_states[area] = None
+
+                if not active_areas:
                     await asyncio.sleep(5)
                     continue
 
-                channel_id = resolve_shoplifting_channel_id()
-                if channel_id is None:
-                    if logger:
-                        logger.warning("Shoplifting watcher disabled because no alert channel is configured")
-                    revive_store.set_setting("shoplifting_enabled", "0")
-                    continue
-
                 payload = await asyncio.to_thread(fetch_shoplifting)
-                is_clear = ShopliftingWatcher._jewelry_store_is_clear(payload)
-                if is_clear and not was_clear:
+                for area in active_areas:
+                    channel_id = resolve_shoplifting_channel_id(area)
+                    if channel_id is None:
+                        if logger:
+                            logger.warning(f"Shoplifting watcher for {area} disabled because no alert channel is configured")
+                        revive_store.set_setting(shoplifting_setting_key(area, "enabled"), "0")
+                        continue
+
+                    trigger = shoplifting_trigger(area)
+                    watch = shoplifting_watch_list(area)
+                    if area_configs[area] != (trigger, watch):
+                        area_configs[area] = (trigger, watch)
+                        area_states[area] = None
+
+                    should_alert, area_states[area], titles = ShopliftingWatcher.evaluate_area(
+                        payload, area, area_states[area], trigger=trigger, watch=watch
+                    )
+                    if not should_alert:
+                        continue
+
                     channel = bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
-                    message = ShopliftingWatcher.alert_message(
-                        revive_store.get_setting("shoplifting_alert_message")
+                    message = ShopliftingWatcher.format_alert(
+                        revive_store.get_setting(shoplifting_setting_key(area, "alert_message")),
+                        area=area,
+                        titles=titles,
+                        trigger=trigger,
                     )
                     await channel.send(
                         message,
                         allowed_mentions=discord.AllowedMentions(users=True, roles=True, everyone=False),
                     )
                     if logger:
-                        logger.info(f"Posted shoplifting alert to channel {channel_id}")
-                was_clear = is_clear
+                        logger.info(f"Posted {area} shoplifting alert to channel {channel_id}")
             except Exception as exc:
                 if logger:
                     logger.warning(f"Shoplifting watcher error: {type(exc).__name__}: {exc}")
@@ -2171,6 +2271,36 @@ def serve_discord_bot(token: str, prefix: str = "!ti", guild_id: int | None = No
         categories = autocomplete.categories(current=current, limit=25)
         return [app_commands.Choice(name=name[:100], value=name) for name in categories[:25]]
 
+    def selected_shoplifting_area(interaction):
+        area = str(getattr(interaction.namespace, "area", "") or "")
+        return area if area in ShopliftingWatcher.AREAS else None
+
+    async def shoplifting_trigger_autocomplete(interaction, current: str):
+        area = selected_shoplifting_area(interaction)
+        if area is None:
+            return [app_commands.Choice(name="Pick an area first", value="any")]
+        text = (current or "").lower()
+        return [
+            app_commands.Choice(name=f"{value} - {ShopliftingWatcher.trigger_summary(area, value)}"[:100], value=value)
+            for value in ShopliftingWatcher.available_triggers(area)
+            if text in value
+        ][:25]
+
+    async def shoplifting_obstacle_autocomplete(interaction, current: str):
+        area = selected_shoplifting_area(interaction)
+        if area is None:
+            return []
+        prefix, _, tail = (current or "").rpartition(",")
+        already = {part.strip().lower() for part in prefix.split(",") if part.strip()}
+        search = tail.strip().lower()
+        choices = []
+        for title in ShopliftingWatcher.area_obstacles(area):
+            if title.lower() in already or (search and search not in title.lower()):
+                continue
+            value = f"{prefix.strip()}, {title}" if prefix.strip() else title
+            choices.append(app_commands.Choice(name=value[:100], value=value[:100]))
+        return choices[:25]
+
     @bot.event
     async def on_ready():
         nonlocal revive_watcher_task, revive_request_alert_task, oc_delay_alert_task, shoplifting_alert_task
@@ -2182,6 +2312,9 @@ def serve_discord_bot(token: str, prefix: str = "!ti", guild_id: int | None = No
                     send_messages=True,
                     embed_links=True,
                     read_message_history=True,
+                    add_reactions=True,
+                    manage_messages=True,
+                    manage_roles=True,
                 )
                 invite_url = discord.utils.oauth_url(
                     int(bot.user.id),
@@ -2203,16 +2336,12 @@ def serve_discord_bot(token: str, prefix: str = "!ti", guild_id: int | None = No
                 except discord.Forbidden:
                     if logger:
                         logger.warning(
-                            f"Guild slash sync failed for guild {guild_id}: Missing Access. "
-                            "Falling back to global sync."
+                            f"Guild slash sync failed for guild {guild_id}: Missing Access."
                         )
-                    await bot.tree.sync()
-                    if logger:
-                        logger.info("Discord global slash commands synced (fallback)")
-            else:
-                await bot.tree.sync()
-                if logger:
-                    logger.info("Discord global slash commands synced")
+
+            await bot.tree.sync()
+            if logger:
+                logger.info("Discord global slash commands synced")
         except Exception as exc:
             if logger:
                 logger.error(f"Failed to sync slash commands: {type(exc).__name__}: {exc}")
@@ -2236,6 +2365,69 @@ def serve_discord_bot(token: str, prefix: str = "!ti", guild_id: int | None = No
             shoplifting_alert_task = asyncio.create_task(shoplifting_alert_watcher())
             if logger:
                 logger.info("Started shoplifting alert watcher task")
+
+    async def apply_reaction_role(payload, grant: bool):
+        if payload.guild_id is None:
+            return
+
+        role_id, mode = lookup_reaction_binding(payload.message_id, payload.emoji)
+        if role_id is None:
+            return
+        if mode == "toggle" and not grant:
+            return
+
+        guild = bot.get_guild(int(payload.guild_id))
+        if guild is None:
+            return
+
+        role = guild.get_role(role_id)
+        if role is None:
+            return
+
+        member = getattr(payload, "member", None)
+        if member is None:
+            try:
+                member = await guild.fetch_member(int(payload.user_id))
+            except Exception:
+                return
+        if member.bot:
+            return
+
+        if mode == "toggle":
+            grant = role not in member.roles
+            await clear_member_reaction(payload, member)
+
+        try:
+            if grant:
+                await member.add_roles(role, reason="Reaction role")
+            else:
+                await member.remove_roles(role, reason="Reaction role")
+        except discord.Forbidden:
+            if logger:
+                logger.warning(f"Missing permission to manage role {role.name} in guild {guild.id}")
+        except Exception as exc:
+            if logger:
+                logger.warning(f"Reaction role update failed: {type(exc).__name__}: {exc}")
+
+    async def clear_member_reaction(payload, member):
+        try:
+            channel = bot.get_channel(int(payload.channel_id)) or await bot.fetch_channel(int(payload.channel_id))
+            message = await channel.fetch_message(int(payload.message_id))
+            await message.remove_reaction(payload.emoji, member)
+        except discord.Forbidden:
+            if logger:
+                logger.warning("Missing Manage Messages permission to clear a toggle reaction")
+        except Exception as exc:
+            if logger:
+                logger.warning(f"Could not clear toggle reaction: {type(exc).__name__}: {exc}")
+
+    @bot.event
+    async def on_raw_reaction_add(payload):
+        await apply_reaction_role(payload, grant=True)
+
+    @bot.event
+    async def on_raw_reaction_remove(payload):
+        await apply_reaction_role(payload, grant=False)
 
     if allow_prefix_commands:
         @bot.command(name="ti")
@@ -2635,66 +2827,350 @@ def serve_discord_bot(token: str, prefix: str = "!ti", guild_id: int | None = No
                 ok=True,
             )
 
-    @bot.tree.command(name="ti_shoplifting", description="Configure Jewelry Store shoplifting alerts")
+    @bot.tree.command(name="ti_shoplifting", description="Configure shoplifting alerts per area")
     @app_commands.describe(
-        action="start, stop, status, or test",
+        action="start a new alert, update an existing one, stop, status, test, or explain",
+        area="Shoplifting area to configure",
         channel="Channel that receives alerts; required for start unless already configured",
+        trigger="Which security to alert on; the options shown are limited to what this area has",
+        obstacles="Narrow the watch to these security items; leave blank to watch all of them",
         message="Custom alert message; supports user and role mentions",
-        poll_seconds="Polling interval in seconds (minimum 5)",
+        poll_seconds="Polling interval in seconds (minimum 5, shared by all areas)",
+        force="With update: create and enable the alert if it does not exist yet",
     )
     @app_commands.choices(action=[
-        app_commands.Choice(name="Start", value="start"),
+        app_commands.Choice(name="Start (create and enable)", value="start"),
+        app_commands.Choice(name="Update (change an existing alert)", value="update"),
         app_commands.Choice(name="Stop", value="stop"),
         app_commands.Choice(name="Status", value="status"),
         app_commands.Choice(name="Test alert", value="test"),
+        app_commands.Choice(name="Explain triggers", value="explain"),
     ])
+    @app_commands.choices(area=[
+        app_commands.Choice(name="Jewelry Store", value="jewelry_store"),
+        app_commands.Choice(name="Big Al's Gun Shop", value="big_als"),
+        app_commands.Choice(name="Pharmacy", value="pharmacy"),
+        app_commands.Choice(name="Cyber Force", value="cyber_force"),
+        app_commands.Choice(name="Super Store", value="super_store"),
+        app_commands.Choice(name="TC Clothing", value="tc_clothing"),
+        app_commands.Choice(name="Bits 'n' Bobs", value="bits_n_bobs"),
+        app_commands.Choice(name="Sally's Sweet Shop", value="sallys_sweet_shop"),
+        app_commands.Choice(name="All areas (status and explain only)", value="all"),
+    ])
+    @app_commands.autocomplete(trigger=shoplifting_trigger_autocomplete, obstacles=shoplifting_obstacle_autocomplete)
     async def ti_shoplifting_slash(
         interaction: discord.Interaction,
         action: str,
+        area: str = "jewelry_store",
         channel: str | None = None,
+        trigger: str | None = None,
+        obstacles: str | None = None,
         message: str | None = None,
         poll_seconds: int | None = None,
+        force: bool = False,
     ):
         await interaction.response.defer(thinking=False)
         action_value = action
-        configured_channel_id = resolve_shoplifting_channel_id()
         requested_channel_id = _parse_channel_id(channel) if channel else None
 
-        if action_value == "start":
+        if action_value == "explain":
+            areas = list(ShopliftingWatcher.AREAS) if area == "all" else [area]
+            text = "\n\n".join([ShopliftingWatcher.describe_triggers(), *(ShopliftingWatcher.describe_area(name) for name in areas)])
+            await send_embed_chunks(interaction.followup.send, title="Shoplifting Alerts Explained", text=text, ok=True)
+            return
+
+        if action_value == "status":
+            areas = list(ShopliftingWatcher.AREAS) if area == "all" else [area]
+            lines = []
+            for name in areas:
+                configured_channel_id = resolve_shoplifting_channel_id(name)
+                status = "enabled" if shoplifting_is_enabled(name) else "disabled"
+                channel_text = f"<#{configured_channel_id}>" if configured_channel_id else "not configured"
+                area_trigger = shoplifting_trigger(name)
+                watched = shoplifting_watch_list(name)
+                current_message = ShopliftingWatcher.alert_message(
+                    revive_store.get_setting(shoplifting_setting_key(name, "alert_message")), area=name, trigger=area_trigger
+                )
+                lines.append(
+                    f"{ShopliftingWatcher.area_label(name)}\n"
+                    f"  Status: {status}\n"
+                    f"  Channel: {channel_text}\n"
+                    f"  Trigger: {area_trigger} - {ShopliftingWatcher.trigger_summary(name, area_trigger)}\n"
+                    f"  Watching: {', '.join(watched) if watched else 'all security'}\n"
+                    f"  Message: {current_message}"
+                )
+            poll = max(5, int(revive_store.get_setting("shoplifting_poll_seconds") or settings.shoplifting_poll_seconds))
+            lines.append(f"Poll interval: {poll}s")
+            await send_embed_chunks(interaction.followup.send, title="Shoplifting Alert Status", text="\n".join(lines), ok=True)
+            return
+
+        if area not in ShopliftingWatcher.AREAS:
+            await send_embed_chunks(interaction.followup.send, title="Shoplifting Setup Failed", text="Choose a single area for start, update, stop, and test.", ok=False)
+            return
+
+        label = ShopliftingWatcher.area_label(area)
+        configured_channel_id = resolve_shoplifting_channel_id(area)
+
+        if action_value == "stop":
+            revive_store.set_setting(shoplifting_setting_key(area, "enabled"), "0")
+            await send_embed_chunks(interaction.followup.send, title="Shoplifting Alert Disabled", text=f"{label} polling has stopped.", ok=True)
+            return
+
+        if action_value == "test":
             target_channel_id = requested_channel_id or configured_channel_id
             target_channel = bot.get_channel(target_channel_id) if target_channel_id else None
             if target_channel is None:
-                await send_embed_chunks(interaction.followup.send, title="Shoplifting Alert Setup Failed", text="Choose an alert channel when starting the watcher.", ok=False)
+                await send_embed_chunks(interaction.followup.send, title="Shoplifting Test Failed", text="Choose a channel or start the watcher first. A test alert does not call Torn.", ok=False)
                 return
-            revive_store.set_setting("shoplifting_channel_id", str(int(target_channel.id)))
-            if message is not None:
-                revive_store.set_setting("shoplifting_alert_message", ShopliftingWatcher.alert_message(message))
-            if poll_seconds is not None:
-                revive_store.set_setting("shoplifting_poll_seconds", str(max(5, int(poll_seconds))))
-            revive_store.set_setting("shoplifting_enabled", "1")
-            await send_embed_chunks(interaction.followup.send, title="Shoplifting Alert Enabled", text=f"Jewelry Store alerts will post in <#{int(target_channel.id)}>.", ok=True)
+            alert_text = ShopliftingWatcher.alert_message(
+                message or revive_store.get_setting(shoplifting_setting_key(area, "alert_message")),
+                area=area,
+                trigger=trigger or shoplifting_trigger(area),
+            )
+            await target_channel.send(alert_text, allowed_mentions=discord.AllowedMentions(users=True, roles=True, everyone=False))
+            await send_embed_chunks(interaction.followup.send, title="Shoplifting Test Alert Sent", text=f"Sent a test {label} alert to <#{int(target_channel.id)}>.", ok=True)
             return
 
-        if action_value == "stop":
-            revive_store.set_setting("shoplifting_enabled", "0")
-            await send_embed_chunks(interaction.followup.send, title="Shoplifting Alert Disabled", text="Jewelry Store polling has stopped.", ok=True)
+        already_configured = configured_channel_id is not None
+        if action_value == "update" and not already_configured and not force:
+            await send_embed_chunks(
+                interaction.followup.send,
+                title="Shoplifting Update Failed",
+                text=f"No {label} alert exists yet. Use action Start, or re-run this update with force:true and a channel.",
+                ok=False,
+            )
             return
 
         target_channel_id = requested_channel_id or configured_channel_id
         target_channel = bot.get_channel(target_channel_id) if target_channel_id else None
-        if action_value == "test":
-            if target_channel is None:
-                await send_embed_chunks(interaction.followup.send, title="Shoplifting Test Failed", text="Choose a channel or start the watcher first. A test alert does not call Torn.", ok=False)
-                return
-            alert_text = ShopliftingWatcher.alert_message(message or revive_store.get_setting("shoplifting_alert_message"))
-            await target_channel.send(alert_text, allowed_mentions=discord.AllowedMentions(users=True, roles=True, everyone=False))
-            await send_embed_chunks(interaction.followup.send, title="Shoplifting Test Alert Sent", text=f"Sent a test alert to <#{int(target_channel.id)}>.", ok=True)
+        if target_channel is None:
+            await send_embed_chunks(interaction.followup.send, title="Shoplifting Setup Failed", text="Choose an alert channel for this area.", ok=False)
             return
 
-        current_message = ShopliftingWatcher.alert_message(revive_store.get_setting("shoplifting_alert_message"))
-        status = "enabled" if shoplifting_is_enabled() else "disabled"
-        channel_text = f"<#{configured_channel_id}>" if configured_channel_id else "not configured"
-        await send_embed_chunks(interaction.followup.send, title="Shoplifting Alert Status", text=f"Status: {status}\nChannel: {channel_text}\nMessage: {current_message}", ok=True)
+        if trigger is not None:
+            allowed = ShopliftingWatcher.available_triggers(area)
+            if trigger not in allowed:
+                await send_embed_chunks(
+                    interaction.followup.send,
+                    title="Shoplifting Setup Failed",
+                    text=f"{label} only supports these triggers: {', '.join(allowed)}.",
+                    ok=False,
+                )
+                return
+
+        if obstacles is not None:
+            titles, unknown = ShopliftingWatcher.validate_watch_list(area, obstacles)
+            if unknown:
+                await send_embed_chunks(
+                    interaction.followup.send,
+                    title="Shoplifting Setup Failed",
+                    text=(
+                        f"{label} has no security called {', '.join(unknown)}.\n"
+                        f"Available: {', '.join(ShopliftingWatcher.area_obstacles(area))}"
+                    ),
+                    ok=False,
+                )
+                return
+            revive_store.set_setting(shoplifting_setting_key(area, "obstacles"), ", ".join(titles))
+
+        revive_store.set_setting(shoplifting_setting_key(area, "channel_id"), str(int(target_channel.id)))
+        if trigger is not None:
+            revive_store.set_setting(shoplifting_setting_key(area, "trigger"), trigger)
+        if message is not None:
+            revive_store.set_setting(
+                shoplifting_setting_key(area, "alert_message"), ShopliftingWatcher.alert_message(message, area=area)
+            )
+        if poll_seconds is not None:
+            revive_store.set_setting("shoplifting_poll_seconds", str(max(5, int(poll_seconds))))
+        if action_value == "start" or force or not already_configured:
+            revive_store.set_setting(shoplifting_setting_key(area, "enabled"), "1")
+
+        effective_trigger = shoplifting_trigger(area)
+        watched = shoplifting_watch_list(area)
+        await send_embed_chunks(
+            interaction.followup.send,
+            title="Shoplifting Alert Enabled" if action_value == "start" else "Shoplifting Alert Updated",
+            text=(
+                f"{label} alerts post in <#{int(target_channel.id)}>.\n"
+                f"Status: {'enabled' if shoplifting_is_enabled(area) else 'disabled'}\n"
+                f"Trigger: {effective_trigger} - {ShopliftingWatcher.trigger_summary(area, effective_trigger)}\n"
+                f"Watching: {', '.join(watched) if watched else 'all security'}\n"
+                f"Message: {ShopliftingWatcher.alert_message(revive_store.get_setting(shoplifting_setting_key(area, 'alert_message')), area=area, trigger=effective_trigger)}"
+            ),
+            ok=True,
+        )
+
+    @bot.tree.command(name="ti_reaction_role", description="Post or manage a message that grants roles on reaction")
+    @app_commands.describe(
+        action="post, add, remove, or list",
+        channel="Channel for the new post (post) or that holds the message (add)",
+        role="Role granted when a member reacts; role mention or ID",
+        emoji="Emoji members react with",
+        pairs="Multiple bindings at once, e.g. 🔫=<@&111>, 💊=<@&222>",
+        mode="keep: reaction stays and un-reacting removes the role. toggle: reaction is cleared and reacting again removes the role",
+        message="Message body for the new post",
+        message_id="Existing message ID for add or remove",
+    )
+    @app_commands.choices(action=[
+        app_commands.Choice(name="Post new message", value="post"),
+        app_commands.Choice(name="Add to existing message", value="add"),
+        app_commands.Choice(name="Remove binding", value="remove"),
+        app_commands.Choice(name="List bindings", value="list"),
+    ])
+    @app_commands.choices(mode=[
+        app_commands.Choice(name="Keep reaction (un-react to lose the role)", value="keep"),
+        app_commands.Choice(name="Clear reaction (react again to lose the role)", value="toggle"),
+    ])
+    @app_commands.default_permissions(manage_roles=True)
+    async def ti_reaction_role_slash(
+        interaction: discord.Interaction,
+        action: str,
+        channel: str | None = None,
+        role: str | None = None,
+        emoji: str | None = None,
+        pairs: str | None = None,
+        mode: str | None = None,
+        message: str | None = None,
+        message_id: str | None = None,
+    ):
+        await interaction.response.defer(thinking=False)
+        mapping = read_reaction_roles()
+
+        if action == "list":
+            if not mapping:
+                await send_embed_chunks(interaction.followup.send, title="Reaction Roles", text="No reaction role bindings configured.", ok=True)
+                return
+            lines = []
+            for stored_message_id, entry in mapping.items():
+                stored_mode, bindings = _normalize_reaction_entry(entry)
+                lines.append(f"Message {stored_message_id} ({stored_mode})")
+                for emoji_key, binding in bindings.items():
+                    stored_role_id = binding.get("role_id") if isinstance(binding, dict) else binding
+                    display = binding.get("emoji") if isinstance(binding, dict) else emoji_key
+                    lines.append(f"  {display} -> <@&{stored_role_id}>")
+            await send_embed_chunks(interaction.followup.send, title="Reaction Roles", text="\n".join(lines), ok=True)
+            return
+
+        if action == "remove":
+            if not message_id or not str(message_id).strip().isdigit():
+                await send_embed_chunks(interaction.followup.send, title="Reaction Role Failed", text="Provide the message_id of the binding to remove.", ok=False)
+                return
+            key = str(int(message_id))
+            stored_mode, bindings = _normalize_reaction_entry(mapping.get(key))
+            removal_emojis = [text for text, _ in _parse_reaction_pairs(pairs)] if pairs else []
+            if emoji:
+                removal_emojis.append(emoji)
+            if removal_emojis:
+                for removal in removal_emojis:
+                    bindings.pop(_normalize_emoji_key(removal), None)
+                if bindings:
+                    mapping[key] = {"mode": stored_mode, "bindings": bindings}
+                else:
+                    mapping.pop(key, None)
+                removed_text = f"Removed {', '.join(removal_emojis)} from message {key}."
+            else:
+                mapping.pop(key, None)
+                removed_text = f"Cleared all bindings for message {key}."
+            write_reaction_roles(mapping)
+            await send_embed_chunks(interaction.followup.send, title="Reaction Role Removed", text=removed_text, ok=True)
+            return
+
+        guild = interaction.guild
+        if guild is None:
+            await send_embed_chunks(interaction.followup.send, title="Reaction Role Failed", text="Run this command inside a server.", ok=False)
+            return
+
+        requested_pairs = _parse_reaction_pairs(pairs) if pairs else []
+        if emoji and role:
+            requested_pairs.append((emoji, role))
+        if not requested_pairs:
+            await send_embed_chunks(interaction.followup.send, title="Reaction Role Failed", text="Provide emoji + role, or use pairs such as `🔫=<@&111>, 💊=<@&222>`.", ok=False)
+            return
+
+        if not guild.me.guild_permissions.manage_roles:
+            await send_embed_chunks(interaction.followup.send, title="Reaction Role Failed", text="The bot needs the Manage Roles permission.", ok=False)
+            return
+
+        resolved_pairs = []
+        for emoji_text, role_ref in requested_pairs:
+            role_id = _parse_role_id(role_ref)
+            target_role = guild.get_role(role_id) if role_id else None
+            if target_role is None:
+                await send_embed_chunks(interaction.followup.send, title="Reaction Role Failed", text=f"Could not resolve a role for `{emoji_text}`. Use a mention such as <@&123> or its ID.", ok=False)
+                return
+            if guild.me.top_role <= target_role:
+                await send_embed_chunks(interaction.followup.send, title="Reaction Role Failed", text=f"The bot's highest role must rank above {target_role.name}.", ok=False)
+                return
+            resolved_pairs.append((emoji_text, target_role))
+
+        duplicate_keys = [_normalize_emoji_key(emoji_text) for emoji_text, _ in resolved_pairs]
+        if len(set(duplicate_keys)) != len(duplicate_keys):
+            await send_embed_chunks(interaction.followup.send, title="Reaction Role Failed", text="Each emoji can only map to one role on a message.", ok=False)
+            return
+
+        channel_id = _parse_channel_id(channel) if channel else interaction.channel_id
+        target_channel = bot.get_channel(channel_id) if channel_id else None
+        if target_channel is None:
+            await send_embed_chunks(interaction.followup.send, title="Reaction Role Failed", text="Choose a valid channel.", ok=False)
+            return
+
+        existing_mode = "keep"
+        if action == "add" and message_id and str(message_id).strip().isdigit():
+            existing_mode, _ = _normalize_reaction_entry(mapping.get(str(int(message_id))))
+        effective_mode = mode or existing_mode
+
+        if action == "post":
+            body = (message or "").strip()
+            default_lines = [f"React with {emoji_text} to receive {target_role.mention}" for emoji_text, target_role in resolved_pairs]
+            if effective_mode == "toggle":
+                default_lines.append("Your reaction is cleared automatically; react again to remove the role.")
+            text = f"{body}\n" + "\n".join(default_lines) if body else "\n".join(default_lines)
+            try:
+                target_message = await target_channel.send(text, allowed_mentions=discord.AllowedMentions.none())
+            except discord.HTTPException as exc:
+                await send_embed_chunks(interaction.followup.send, title="Reaction Role Failed", text=f"Could not post the message: {exc}", ok=False)
+                return
+        else:
+            if not message_id or not str(message_id).strip().isdigit():
+                await send_embed_chunks(interaction.followup.send, title="Reaction Role Failed", text="Provide the message_id to bind to.", ok=False)
+                return
+            try:
+                target_message = await target_channel.fetch_message(int(message_id))
+            except discord.HTTPException as exc:
+                await send_embed_chunks(interaction.followup.send, title="Reaction Role Failed", text=f"Could not read that message: {exc}", ok=False)
+                return
+
+        if effective_mode == "toggle" and not target_channel.permissions_for(guild.me).manage_messages:
+            await send_embed_chunks(interaction.followup.send, title="Reaction Role Failed", text="Toggle mode needs the Manage Messages permission in that channel so the bot can clear reactions.", ok=False)
+            return
+
+        _, bindings = _normalize_reaction_entry(mapping.get(str(target_message.id)))
+        applied = []
+        failed = []
+        for emoji_text, target_role in resolved_pairs:
+            try:
+                await target_message.add_reaction(emoji_text)
+            except discord.HTTPException as exc:
+                failed.append(f"{emoji_text}: {exc}")
+                continue
+            bindings[_normalize_emoji_key(emoji_text)] = {"role_id": int(target_role.id), "emoji": emoji_text}
+            applied.append(f"{emoji_text} -> {target_role.name}")
+
+        if applied:
+            mapping[str(target_message.id)] = {"mode": effective_mode, "bindings": bindings}
+            write_reaction_roles(mapping)
+
+        lines = [f"Message {target_message.id} in <#{int(target_channel.id)}> ({effective_mode})"]
+        lines.extend(f"  {entry}" for entry in applied)
+        if failed:
+            lines.append("Skipped:")
+            lines.extend(f"  {entry}" for entry in failed)
+        await send_embed_chunks(
+            interaction.followup.send,
+            title="Reaction Roles Ready" if applied else "Reaction Role Failed",
+            text="\n".join(lines),
+            ok=bool(applied),
+        )
 
     @bot.tree.command(name="ti_report", description="Structured report command with autocomplete")
     @app_commands.describe(
