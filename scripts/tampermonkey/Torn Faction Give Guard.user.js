@@ -2,7 +2,7 @@
 // @name         Torn Faction Give Guard
 // @namespace    http://tampermonkey.net/
 // @author       TornIntel
-// @version      1.4.1
+// @version      1.5.0
 // @description  Shows a member's faction vault balance while you type their name and blocks giving them more than they have. Desktop and Torn PDA.
 // @match        https://www.torn.com/factions.php*
 // @match        https://torn.com/factions.php*
@@ -21,9 +21,10 @@
 (function () {
   'use strict';
 
-  const VERSION = '1.4.1';
+  const VERSION = '1.5.0';
   const STORE_PREFIX = 'tfgg_';
   const API_KEY_KEY = 'api_key';
+  const API_ENABLED_KEY = 'api_enabled';
   const ENFORCE_KEY = 'enforce';
   const DEBUG_KEY = 'debug';
   const CACHE_KEY = 'balance_cache';
@@ -86,6 +87,7 @@
 
   function debugEnabled() { return recall(DEBUG_KEY, false) === true; }
   function enforceEnabled() { return recall(ENFORCE_KEY, true) !== false; }
+  function apiEnabled() { return recall(API_ENABLED_KEY, false) === true; }
 
   function log(...args) {
     if (debugEnabled()) console.log('[Give Guard]', ...args);
@@ -209,7 +211,7 @@
   }
 
   function refreshIfStale() {
-    if (Date.now() - state.fetchedAt < STALE_REFRESH_MS) return;
+    if (!apiEnabled() || Date.now() - state.fetchedAt < STALE_REFRESH_MS) return;
     fetchBalances(false).then(refreshAllChips).catch(refreshAllChips);
   }
 
@@ -727,10 +729,26 @@
     const next = prompt('Torn API key with faction access (needs the donations selection):', current);
     if (next === null) return;
     store(API_KEY_KEY, next.trim());
+    store(API_ENABLED_KEY, Boolean(next.trim()));
     fetchBalances(true).then(refreshAllChips).catch(refreshAllChips);
   });
 
+  registerMenuCommand('Toggle optional API fallback', () => {
+    const next = !apiEnabled();
+    store(API_ENABLED_KEY, next);
+    if (next) {
+      fetchBalances(true).then(refreshAllChips).catch(refreshAllChips);
+    } else {
+      refreshAllChips();
+      alert('Give Guard will now use only the balance shown on the faction page.');
+    }
+  });
+
   registerMenuCommand('Refresh vault balances', () => {
+    if (!apiEnabled()) {
+      alert('API fallback is disabled. Give Guard is using the balance shown on the faction page.');
+      return;
+    }
     fetchBalances(true)
       .then(byId => { refreshAllChips(); alert('Give Guard loaded ' + Object.keys(byId).length + ' member balances.'); })
       .catch(error => { refreshAllChips(); alert('Give Guard could not load balances: ' + (error.message || error)); });
@@ -766,8 +784,7 @@
   document.addEventListener('keydown', guardKey, true);
   window.addEventListener('hashchange', scheduleScan);
 
-  loadCache();
-  fetchBalances(false).then(refreshAllChips).catch(() => refreshAllChips());
+  if (apiEnabled()) loadCache();
 
   new MutationObserver(scheduleScan).observe(document.documentElement, { childList: true, subtree: true });
   setInterval(() => { attach(); refreshAllChips(); }, RESCAN_MS);
