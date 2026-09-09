@@ -2,9 +2,10 @@
 // @name         Torn Faction Give Guard
 // @namespace    http://tampermonkey.net/
 // @author       TornIntel
-// @version      1.5.1
+// @version      1.5.2
 // @description  Shows a member's faction vault balance while you type their name and blocks giving them more than they have. Desktop and Torn PDA.
-// @match        https://www.torn.com/factions.php?step=your&type=1#/tab=controls*        
+// @match        https://www.torn.com/factions.php*
+// @match        https://torn.com/factions.php*
 // @grant        GM_registerMenuCommand
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -20,7 +21,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '1.5.0';
+  const VERSION = '1.5.2';
   const STORE_PREFIX = 'tfgg_';
   const API_KEY_KEY = 'api_key';
   const API_ENABLED_KEY = 'api_enabled';
@@ -55,7 +56,10 @@
     watched: new WeakSet(),
     chips: new WeakMap(),
     containers: [],
-    rescanTimer: null
+    rescanTimer: null,
+    observer: null,
+    interval: null,
+    mounted: false
   };
 
   /* ------------------------------------------------------------------ storage */
@@ -678,6 +682,7 @@
   }
 
   function scheduleScan() {
+    if (!state.mounted) return;
     if (state.rescanTimer) return;
     state.rescanTimer = setTimeout(() => {
       state.rescanTimer = null;
@@ -779,15 +784,56 @@
     }
   });
 
-  document.addEventListener('click', guardClick, true);
-  document.addEventListener('keydown', guardKey, true);
-  window.addEventListener('hashchange', scheduleScan);
+  function isControlsTab() {
+    return window.location.hash === '#/tab=controls';
+  }
 
-  if (apiEnabled()) loadCache();
+  function clearFeatureUi() {
+    state.containers.forEach(container => {
+      const chip = state.chips.get(container);
+      if (chip && chip.isConnected) chip.remove();
+    });
+    state.containers = [];
+    state.watched = new WeakSet();
+    state.chips = new WeakMap();
+    closeModal();
+  }
 
-  new MutationObserver(scheduleScan).observe(document.documentElement, { childList: true, subtree: true });
-  setInterval(() => { attach(); refreshAllChips(); }, RESCAN_MS);
-  attach();
+  function mountControlsFeature() {
+    if (state.mounted) return;
+    state.mounted = true;
+    document.addEventListener('click', guardClick, true);
+    document.addEventListener('keydown', guardKey, true);
+    if (apiEnabled()) loadCache();
+    state.observer = new MutationObserver(scheduleScan);
+    state.observer.observe(document.documentElement, { childList: true, subtree: true });
+    state.interval = setInterval(() => { attach(); refreshAllChips(); }, RESCAN_MS);
+    attach();
+    console.info('[Give Guard] Controls tab active. Feature mounted.');
+  }
+
+  function unmountControlsFeature() {
+    if (!state.mounted) return;
+    state.mounted = false;
+    document.removeEventListener('click', guardClick, true);
+    document.removeEventListener('keydown', guardKey, true);
+    if (state.observer) state.observer.disconnect();
+    if (state.interval) clearInterval(state.interval);
+    if (state.rescanTimer) clearTimeout(state.rescanTimer);
+    state.observer = null;
+    state.interval = null;
+    state.rescanTimer = null;
+    clearFeatureUi();
+    console.info('[Give Guard] Controls tab inactive. Feature unmounted.');
+  }
+
+  function handleHashChange() {
+    if (isControlsTab()) mountControlsFeature();
+    else unmountControlsFeature();
+  }
+
+  window.addEventListener('hashchange', handleHashChange);
+  handleHashChange();
 
   console.info('[Give Guard] v' + VERSION + ' loaded (' + (IS_TORN_PDA ? 'PDA/touch' : 'desktop') + ').');
 })();
