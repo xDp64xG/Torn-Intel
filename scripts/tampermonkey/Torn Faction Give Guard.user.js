@@ -4,8 +4,8 @@
 // @author       TornIntel
 // @version      1.5.0
 // @description  Shows a member's faction vault balance while you type their name and blocks giving them more than they have. Desktop and Torn PDA.
-// @match        https://www.torn.com/factions.php*
-// @match        https://torn.com/factions.php*
+// @match        https://www.torn.com/factions.php?step=your&type=1#/tab=controls*
+// @match        
 // @grant        GM_registerMenuCommand
 // @grant        GM_getValue
 // @grant        GM_setValue
