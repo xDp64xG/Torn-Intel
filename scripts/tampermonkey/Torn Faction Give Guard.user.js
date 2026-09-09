@@ -2,10 +2,9 @@
 // @name         Torn Faction Give Guard
 // @namespace    http://tampermonkey.net/
 // @author       TornIntel
-// @version      1.5.0
+// @version      1.5.1
 // @description  Shows a member's faction vault balance while you type their name and blocks giving them more than they have. Desktop and Torn PDA.
-// @match        https://www.torn.com/factions.php?step=your&type=1#/tab=controls*
-// @match        
+// @match        https://www.torn.com/factions.php?step=your&type=1#/tab=controls*        
 // @grant        GM_registerMenuCommand
 // @grant        GM_getValue
 // @grant        GM_setValue
