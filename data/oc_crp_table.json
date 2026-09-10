@@ -325,7 +325,7 @@
         {
           "position": "Muscle",
           "weight": 0.479,
-          "min_cpr": 75
+          "min_cpr": 70
         },
         {
           "position": "Hustler",
@@ -340,7 +340,7 @@
         {
           "position": "Robber #2",
           "weight": 0.2368,
-          "min_cpr": 70
+          "min_cpr": 65
         }
       ]
     },
@@ -352,12 +352,12 @@
         {
           "position": "Hustler",
           "weight": 0.4841,
-          "min_cpr": 75
+          "min_cpr": 70
         },
         {
           "position": "Imitator",
           "weight": 0.3557,
-          "min_cpr": 75
+          "min_cpr": 70
         },
         {
           "position": "Muscle #1",
@@ -416,12 +416,12 @@
         {
           "position": "Robber",
           "weight": 0.3595,
-          "min_cpr": 75
+          "min_cpr": 70
         },
         {
           "position": "Looter",
           "weight": 0.07,
-          "min_cpr": 65
+          "min_cpr": 60
         },
         {
           "position": "Hacker",
@@ -431,12 +431,12 @@
         {
           "position": "Picklock",
           "weight": 0.1654,
-          "min_cpr": 70
+          "min_cpr": 65
         },
         {
           "position": "Engineer",
           "weight": 0.2839,
-          "min_cpr": 75
+          "min_cpr": 70
         }
       ]
     },
@@ -448,17 +448,17 @@
         {
           "position": "Enforcer",
           "weight": 0.274,
-          "min_cpr": 75
+          "min_cpr": 70
         },
         {
           "position": "Hustler",
           "weight": 0.421,
-          "min_cpr": 75
+          "min_cpr": 70
         },
         {
           "position": "Engineer",
           "weight": 0.3049,
-          "min_cpr": 75
+          "min_cpr": 70
         }
       ]
     },
@@ -470,17 +470,17 @@
         {
           "position": "Muscle #1",
           "weight": 0.3087,
-          "min_cpr": 75
+          "min_cpr": 70
         },
         {
           "position": "Muscle #2",
           "weight": 0.4215,
-          "min_cpr": 75
+          "min_cpr": 70
         },
         {
           "position": "Enforcer",
           "weight": 0.2698,
-          "min_cpr": 75
+          "min_cpr": 70
         }
       ]
     },
@@ -492,17 +492,17 @@
         {
           "position": "Car Thief",
           "weight": 0.3051,
-          "min_cpr": 75
+          "min_cpr": 70
         },
         {
           "position": "Techie",
           "weight": 0.3837,
-          "min_cpr": 75
+          "min_cpr": 70
         },
         {
           "position": "Engineer",
           "weight": 0.3112,
-          "min_cpr": 75
+          "min_cpr": 70
         }
       ]
     },
@@ -514,7 +514,7 @@
         {
           "position": "Bomber #1",
           "weight": 0.0785,
-          "min_cpr": 65
+          "min_cpr": 60
         },
         {
           "position": "Bomber #2",
@@ -524,7 +524,7 @@
         {
           "position": "Robber #1",
           "weight": 0.071,
-          "min_cpr": 65
+          "min_cpr": 60
         },
         {
           "position": "Robber #2",
@@ -534,7 +534,7 @@
         {
           "position": "Robber #3",
           "weight": 0.3167,
-          "min_cpr": 75
+          "min_cpr": 70
         },
         {
           "position": "Driver",
@@ -551,12 +551,12 @@
         {
           "position": "Assassin",
           "weight": 0.3734,
-          "min_cpr": 75
+          "min_cpr": 70
         },
         {
           "position": "Muscle",
           "weight": 0.2524,
-          "min_cpr": 75
+          "min_cpr": 70 
         },
         {
           "position": "Saboteur #1",
@@ -566,7 +566,7 @@
         {
           "position": "Saboteur #2",
           "weight": 0.0891,
-          "min_cpr": 65
+          "min_cpr": 60
         },
         {
           "position": "Engineer",
@@ -583,17 +583,17 @@
         {
           "position": "Techie",
           "weight": 0.2901,
-          "min_cpr": 75
+          "min_cpr": 70
         },
         {
           "position": "Negotiator",
           "weight": 0.3413,
-          "min_cpr": 75
+          "min_cpr": 70
         },
         {
           "position": "Imitator",
           "weight": 0.3686,
-          "min_cpr": 75
+          "min_cpr": 70
         }
       ]
     },
@@ -605,12 +605,12 @@
         {
           "position": "Imitator",
           "weight": 0.1754,
-          "min_cpr": 70
+          "min_cpr": 65
         },
         {
           "position": "Pickpocket",
           "weight": 0.5083,
-          "min_cpr": 75
+          "min_cpr": 70
         },
         {
           "position": "Hacker",
@@ -620,7 +620,7 @@
         {
           "position": "Techie",
           "weight": 0.1715,
-          "min_cpr": 70
+          "min_cpr": 65
         }
       ]
     },
