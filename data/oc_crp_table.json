@@ -694,6 +694,43 @@
       ]
     },
     {
+      "name": "Cleared for Takeoff",
+      "tier": 7,
+      "success_chance": 0.6923,
+      "roles": [
+        {
+          "position": "Interrogator",
+          "weight": 0.3,
+          "min_cpr": 70
+        },
+        {
+          "position": "Techie",
+          "weight": 0.25,
+          "min_cpr": 65
+        },
+        {
+          "position": "Imitator",
+          "weight": 0.45,
+          "min_cpr": 70
+        },
+        {
+          "position": "Pickpocket",
+          "weight": 0.2,
+          "min_cpr": 65
+        },
+        {
+          "position": "Lookout",
+          "weight": 0.15,
+          "min_cpr": 60
+        },
+        {
+          "position": "Assassin",
+          "weight": 0.1,
+          "min_cpr": 65
+        }
+      ]
+    },
+    {
       "name": "Break the Bank",
       "tier": 8,
       "success_chance": 0.6549,
