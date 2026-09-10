@@ -2,7 +2,7 @@
 // @name         Torn OC CRP Fit
 // @namespace    http://tampermonkey.net/
 // @author       JeffBezas
-// @version      1.5.9
+// @version      1.6.0
 // @description  Highlights the organised crime slots that best fit your CPR, using the faction CRP/weight table.
 // @match        https://www.torn.com/factions.php*
 // @grant        GM_registerMenuCommand
@@ -649,10 +649,11 @@
   }
 
   function isOcPage() {
+    const hash = String(location.hash || '').toLowerCase();
     return (
       location.pathname === '/factions.php' &&
-      location.search.includes('step=your') &&
-      location.search.includes('type=1')
+      new URLSearchParams(location.search).get('step') === 'your' &&
+      /^#\/tab=crimes(?:$|[&#?])/.test(hash)
     );
   }
 
