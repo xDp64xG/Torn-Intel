@@ -1,7 +1,7 @@
 {
   "base_urls": [
-    "https://improved-remind-stamps-containers.trycloudflare.com",
+    "https://dan-journalists-chen-sessions.trycloudflare.com",
     "http://10.0.0.52:8765"
   ],
-  "base_url": "https://improved-remind-stamps-containers.trycloudflare.com"
+  "base_url": "https://dan-journalists-chen-sessions.trycloudflare.com"
 }
