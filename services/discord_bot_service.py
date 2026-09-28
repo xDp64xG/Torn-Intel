@@ -967,6 +967,20 @@ class ReviveDiscordStore:
 
     #######################################################
 
+    def mark_bank_userscript_notified(self, request_id: str):
+        conn = self._connect()
+        try:
+            self._ensure_bank_table(conn)
+            conn.execute(
+                "UPDATE bank_requests SET userscript_notified_at = ? WHERE request_id = ?",
+                (int(time.time()), str(request_id)),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    #######################################################
+
     def get_discord_user_for_torn_id(self, torn_user_id: int):
         conn = self._connect()
         try:
@@ -2859,6 +2873,8 @@ def serve_discord_bot(
             if reason:
                 text += f"\nReason: {reason}"
             await dm_bank_requester(row, "Withdrawal Request Cancelled", text, 0x95a5a6)
+            if by_requester:
+                revive_store.mark_bank_userscript_notified(request_id)
             if logger:
                 logger.info(f"Bank request {request_id} cancelled by {actor}" + (f": {reason}" if reason else ""))
         embed, view = build_bank_request_message(revive_store.get_bank_request(request_id))

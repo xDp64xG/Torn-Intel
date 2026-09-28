@@ -261,6 +261,18 @@ class ReviveRequestListener:
                         self._send_json(200, {"ok": True, "notifications": payload})
                         return
 
+                    if path == "/bank-request/notifications":
+                        try:
+                            requester_id = int(parse_qs(parsed.query).get("requester_id", [""])[0])
+                        except (TypeError, ValueError):
+                            self._send_json(400, {"ok": False, "error": "requester_id_required"})
+                            return
+                        rows = bank_repo.pop_userscript_notifications(requester_id)
+                        if rows:
+                            logger.info(f"Served {len(rows)} bank notification(s) to requester {requester_id}")
+                        self._send_json(200, {"ok": True, "notifications": rows})
+                        return
+
                     self._send_json(404, {"ok": False, "error": "not_found", "path": path, "raw_path": raw_path})
                 except Exception as exc:
                     logger.error(f"Revive listener GET error: {type(exc).__name__}: {exc}")

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TornIntel Bank Request
 // @namespace    http://tampermonkey.net/
-// @version      0.5.0
+// @version      0.6.0
 // @description  Request money from the faction vault; posts to the TornIntel Discord bot with a prefilled fulfill link.
 // @author       TornIntel
 // @match        https://www.torn.com/*
@@ -12,6 +12,7 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
+// @grant        GM_notification
 // @homepageURL  https://github.com/xDp64xG/Torn-Intel
 // @supportURL   https://github.com/xDp64xG/Torn-Intel/issues
 // @updateURL    https://raw.githubusercontent.com/xDp64xG/Torn-Intel/main/scripts/tampermonkey/bank_request.user.js
@@ -27,6 +28,10 @@
     const BUTTON_POSITION_KEY = 'tornintel_bank_button_position';
     const BUTTON_ID = 'tornintel-bank-btn';
     const MODAL_ID = 'tornintel-bank-modal';
+    const MENU_ITEM_ID = 'tornintel-bank-menu-item';
+    const TOAST_ID = 'tornintel-bank-toast';
+    const FLOATING_BUTTON_KEY = 'tornintel_bank_floating_button';
+    const NOTIFY_POLL_MS = 30000;
     const MAX_AMOUNT = 1e12;
 
     const trimSlash = url => String(url || '').replace(/\/+$/, '');
@@ -98,6 +103,9 @@
             setValue(OVERRIDE_KEY, url);
             activeBaseUrl = null;
         });
+        GM_registerMenuCommand('TornIntel Bank: Toggle floating button', () => {
+            setFloatingButton(!isFloatingButtonEnabled());
+        });
     }
 
     // Name comes from the sidebar link: <a href="/profiles.php?XID=..." aria-label="Name: JeffBezas">JeffBezas</a>
@@ -158,6 +166,17 @@
         #${MODAL_ID} .ti-bank-cancel { background: #555e69; }
         #${MODAL_ID} .ti-bank-confirm { background: #2e7d32; }
         #${MODAL_ID} button:disabled { opacity: 0.6; cursor: default; }
+        #${MODAL_ID} .ti-bank-option { display: flex; align-items: center; gap: 6px; margin-top: 10px; color: #b8c4d0; font-size: 12px; cursor: pointer; }
+        #${MODAL_ID} .ti-bank-option input { width: auto; margin: 0; }
+        #${TOAST_ID} {
+            position: fixed; top: 12px; right: 12px; z-index: 2147483647; display: flex; flex-direction: column; gap: 8px;
+            max-width: min(320px, calc(100vw - 24px));
+        }
+        #${TOAST_ID} .ti-bank-toast {
+            padding: 10px 12px; border-radius: 6px; background: #1f242b; color: #eef2f6; font-size: 12px;
+            border-left: 4px solid #e74c3c; box-shadow: 0 8px 20px rgba(0,0,0,0.45); cursor: pointer;
+        }
+        #${TOAST_ID} .ti-bank-toast strong { display: block; margin-bottom: 3px; font-size: 13px; }
     `);
 
     const closeModal = () => document.getElementById(MODAL_ID)?.remove();
@@ -174,6 +193,7 @@
                 <div class="ti-bank-name"></div>
                 <input type="text" placeholder="Amount (e.g. 5000000, 5m or all)" autocomplete="off">
                 <div class="ti-bank-status"></div>
+                <label class="ti-bank-option"><input type="checkbox" class="ti-bank-floating"> Show floating draggable Bank button</label>
                 <div class="ti-bank-actions">
                     <button type="button" class="ti-bank-cancel">Cancel</button>
                     <button type="button" class="ti-bank-confirm">Confirm</button>
@@ -181,12 +201,15 @@
             </div>`;
 
         const nameEl = overlay.querySelector('.ti-bank-name');
-        const input = overlay.querySelector('input');
+        const input = overlay.querySelector('input[type="text"]');
+        const floatingToggle = overlay.querySelector('.ti-bank-floating');
         const status = overlay.querySelector('.ti-bank-status');
         const cancelBtn = overlay.querySelector('.ti-bank-cancel');
         const confirmBtn = overlay.querySelector('.ti-bank-confirm');
 
         nameEl.textContent = user.name ? `Name: ${user.name}` : 'Name: (not found)';
+        floatingToggle.checked = isFloatingButtonEnabled();
+        floatingToggle.addEventListener('change', () => setFloatingButton(floatingToggle.checked));
 
         const setStatus = (text, kind = '') => {
             status.textContent = text;
@@ -303,6 +326,105 @@
         document.body.appendChild(btn);
     };
 
-    mountButton();
-    window.setInterval(mountButton, 5000);
+    function isFloatingButtonEnabled() {
+        return getValue(FLOATING_BUTTON_KEY, false) === true;
+    }
+
+    function setFloatingButton(enabled) {
+        setValue(FLOATING_BUTTON_KEY, Boolean(enabled));
+        syncFloatingButton();
+    }
+
+    function syncFloatingButton() {
+        if (isFloatingButtonEnabled()) mountButton();
+        else document.getElementById(BUTTON_ID)?.remove();
+    }
+
+    // Adds a "Bank Request" entry to Torn's profile dropdown (ul.settings-menu), like Scouter Target Finder.
+    const injectMenuItem = () => {
+        const menu = document.querySelector('ul.settings-menu');
+        if (!menu || document.getElementById(MENU_ITEM_ID)) return;
+
+        const li = document.createElement('li');
+        li.id = MENU_ITEM_ID;
+        li.className = 'setting tornintel-bank-item';
+        li.innerHTML = `
+            <label class="setting-container" style="cursor:pointer">
+                <div class="icon-wrapper">
+                    <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M11.8 10.9c-2.27-.59-3-1.2-3-2.15 0-1.09 1.01-1.85 2.7-1.85 1.78 0 2.44.85 2.5 2.1h2.21c-.07-1.72-1.12-3.3-3.21-3.81V3h-3v2.16c-1.94.42-3.5 1.68-3.5 3.61 0 2.31 1.91 3.46 4.7 4.13 2.5.6 3 1.48 3 2.41 0 .69-.49 1.79-2.7 1.79-2.06 0-2.87-.92-2.98-2.1h-2.2c.12 2.19 1.76 3.42 3.68 3.83V21h3v-2.15c1.95-.37 3.5-1.5 3.5-3.55 0-2.84-2.43-3.81-4.7-4.4z"/></svg>
+                </div>
+                <span class="setting-name">Bank Request</span>
+            </label>`;
+
+        const settingsLink = menu.querySelector('li.link a[href="/preferences.php"]');
+        const logoutLink = menu.querySelector('li.link a[href^="/logout.php"]');
+        const anchor = settingsLink?.parentElement || logoutLink?.parentElement;
+        if (anchor) menu.insertBefore(li, anchor);
+        else menu.appendChild(li);
+
+        li.addEventListener('click', event => {
+            event.preventDefault();
+            event.stopPropagation();
+            openModal();
+        });
+    };
+
+    const showToast = (title, text) => {
+        let container = document.getElementById(TOAST_ID);
+        if (!container) {
+            container = document.createElement('div');
+            container.id = TOAST_ID;
+            document.body.appendChild(container);
+        }
+        const toast = document.createElement('div');
+        toast.className = 'ti-bank-toast';
+        const heading = document.createElement('strong');
+        heading.textContent = title;
+        const body = document.createElement('div');
+        body.textContent = text;
+        toast.append(heading, body);
+        toast.addEventListener('click', () => toast.remove());
+        container.appendChild(toast);
+        window.setTimeout(() => toast.remove(), 20000);
+
+        if (typeof GM_notification === 'function') {
+            try { GM_notification({ title, text, timeout: 20000 }); } catch { /* optional */ }
+        }
+    };
+
+    const describeNotification = (row) => {
+        const amount = `$${Number(row.amount || 0).toLocaleString()}`;
+        const reason = String(row.resolution_note || '').trim();
+        if (row.status === 'expired') {
+            return ['Bank request expired', `Your request for ${amount} wasn't fulfilled within 1 hour.`];
+        }
+        const by = row.resolved_by ? ` by ${row.resolved_by}` : '';
+        return ['Bank request cancelled', `Your request for ${amount} was cancelled${by}.${reason ? ` Reason: ${reason}` : ''}`];
+    };
+
+    let notifyTimer = null;
+    const pollNotifications = async () => {
+        let delay = NOTIFY_POLL_MS;
+        try {
+            const user = getCurrentUser();
+            if (user.id) {
+                const baseUrl = await resolveBaseUrl();
+                const res = await request('GET', `${baseUrl}/bank-request/notifications?requester_id=${encodeURIComponent(user.id)}`);
+                for (const row of Array.isArray(res?.notifications) ? res.notifications : []) {
+                    const [title, text] = describeNotification(row);
+                    showToast(title, text);
+                }
+            }
+        } catch {
+            activeBaseUrl = null;
+            delay = NOTIFY_POLL_MS * 4;
+        }
+        notifyTimer = window.setTimeout(pollNotifications, delay);
+    };
+
+    new MutationObserver(injectMenuItem).observe(document.body, { childList: true, subtree: true });
+    injectMenuItem();
+    syncFloatingButton();
+    window.setInterval(syncFloatingButton, 5000);
+    if (!notifyTimer) pollNotifications();
 })();

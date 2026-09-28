@@ -27,7 +27,8 @@ CREATE TABLE IF NOT EXISTS bank_requests (
     resolved_by TEXT,
     resolution_note TEXT,
     claimed_by TEXT,
-    claimed_at INTEGER
+    claimed_at INTEGER,
+    userscript_notified_at INTEGER
 )
 """
 
@@ -41,6 +42,7 @@ BANK_REQUEST_ADDED_COLUMNS = {
     "resolution_note": "TEXT",
     "claimed_by": "TEXT",
     "claimed_at": "INTEGER",
+    "userscript_notified_at": "INTEGER",
 }
 
 MAX_BANK_AMOUNT = 1_000_000_000_000
@@ -104,3 +106,31 @@ class BankRequestRepository:
         }
         self.db.insert("bank_requests", row)
         return row
+
+    def pop_userscript_notifications(self, requester_id: int, max_age_seconds: int = 86400, limit: int = 10):
+        """Return cancelled/expired requests not yet shown in the userscript, marking them delivered."""
+        cutoff = int(time.time()) - int(max_age_seconds)
+        rows = [
+            dict(row)
+            for row in self.db.select(
+                """
+                SELECT request_id, amount, status, resolved_by, resolution_note, resolved_at
+                FROM bank_requests
+                WHERE requester_id = ?
+                  AND status IN ('cancelled', 'expired')
+                  AND userscript_notified_at IS NULL
+                  AND COALESCE(resolved_at, 0) >= ?
+                ORDER BY resolved_at ASC
+                LIMIT ?
+                """,
+                (int(requester_id), cutoff, int(limit)),
+            )
+        ]
+        if rows:
+            placeholders = ",".join("?" for _ in rows)
+            self.db.execute(
+                f"UPDATE bank_requests SET userscript_notified_at = ? WHERE request_id IN ({placeholders})",
+                (int(time.time()), *[row["request_id"] for row in rows]),
+            )
+            self.db.commit()
+        return rows
