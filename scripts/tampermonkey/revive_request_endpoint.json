@@ -1,7 +1,6 @@
 {
   "base_urls": [
-    "https://eye-states-entering-manor.trycloudflare.com",
-    "http://10.0.0.52:8765"
+    "https://crest-unlikely-above-mainland.trycloudflare.com"
   ],
-  "base_url": "http://10.0.0.52:8765"
+  "base_url": "https://crest-unlikely-above-mainland.trycloudflare.com"
 }
