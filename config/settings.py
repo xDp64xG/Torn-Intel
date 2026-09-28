@@ -14,14 +14,24 @@ Loads configuration from:
 from pathlib import Path
 import os
 import re
-from dotenv import load_dotenv
+
+try:
+    from dotenv import load_dotenv
+except ImportError as exc:
+    raise SystemExit(
+        "python-dotenv is not installed for this interpreter. "
+        "On Ubuntu run: python3 -m venv .venv && .venv/bin/pip install -r requirements.txt, "
+        "then start the bot with .venv/bin/python main.py ..."
+    ) from exc
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# Load .env file from project root
+# utf-8-sig strips the BOM Windows editors (Notepad) add, which otherwise corrupts the first key.
 ENV_FILE = ROOT / ".env"
 if ENV_FILE.exists():
-    load_dotenv(ENV_FILE)
+    load_dotenv(ENV_FILE, encoding="utf-8-sig")
+else:
+    print(f"Warning: {ENV_FILE} not found; using environment variables and defaults only.")
 
 
 # Discord role that identifies members of each faction; override with FACTION_<TAG>_ROLE.
