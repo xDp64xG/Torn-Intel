@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Faction Chat – Torn.com (Desktop + Torn PDA)
 // @namespace    https://torn.com/
-// @version      1.6.5
+// @version      1.6.6
 // @description  Desktop and Torn PDA faction chat tools: status, group tags, officer groups, search, timestamps and touch-friendly controls
 // @author       sercann
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
     'use strict';
 
-    const BFC_VERSION = '1.6.5';
+    const BFC_VERSION = '1.6.6';
     const STORE_KEY   = 'bfc_settings_v2';
     const API_BASE    = 'https://api.torn.com';
     const IS_TOUCH    = matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0;
@@ -24,6 +24,8 @@
     const DEFAULTS = {
         apiKey:           '',
         username:         '',
+        factionName:      '',
+        factionTag:       '',
         refreshInterval:  60,
         showTimestamps:   true,
         showTravelIcons:  true,
@@ -330,17 +332,29 @@
 
     async function apiFetch(path) {
         if (!CFG.apiKey) return null;
+        return apiFetchWithKey(path, CFG.apiKey);
+    }
+
+    async function apiFetchWithKey(path, key) {
         try {
-            const r = await fetch(`${API_BASE}${path}&key=${CFG.apiKey}`);
+            const sep = path.includes('?') ? '&' : '?';
+            const r = await fetch(`${API_BASE}${path}${sep}key=${encodeURIComponent(key)}`);
             const d = await r.json();
-            if (d.error) throw new Error(d.error.error);
+            if (d && d.error) throw new Error(d.error.error || 'API error');
             return d;
         } catch { return null; }
     }
 
+    // Torn API v2 nests some payloads under the selection name; v1 returns them flat.
+    function unwrap(d, selection) {
+        if (!d) return null;
+        const inner = d[selection];
+        return inner && typeof inner === 'object' && !Array.isArray(inner) ? inner : d;
+    }
+
     async function fetchMyUsername() {
         if (!CFG.apiKey || CFG.username) return;
-        const d = await apiFetch('/user/?selections=basic');
+        const d = unwrap(await apiFetch('/v2/user/basic'), 'basic') || unwrap(await apiFetch('/user/?selections=basic'), 'basic');
         if (d && d.name) {
             CFG.username = d.name;
             saveCfg(CFG);
@@ -349,19 +363,46 @@
         }
     }
 
+    async function fetchFactionIdentity() {
+        const d = unwrap(await apiFetch('/v2/faction/basic'), 'basic') || unwrap(await apiFetch('/faction/?selections=basic'), 'basic');
+        if (!d || !d.name) return;
+        if (d.name !== CFG.factionName || (d.tag || '') !== CFG.factionTag) {
+            CFG.factionName = d.name;
+            CFG.factionTag  = d.tag || '';
+            saveCfg(CFG);
+        }
+    }
+
+    // v2 returns members as an array; legacy v1 returned an id-keyed object.
+    // The v1 `faction/basic` selection now mirrors v2 and reports members as a count.
+    function normalizeMembers(payload) {
+        if (!payload) return null;
+        const raw = payload.members !== undefined ? payload.members : payload;
+        if (Array.isArray(raw)) {
+            return raw.filter(m => m && m.id != null).map(m => [String(m.id), m]);
+        }
+        if (raw && typeof raw === 'object') {
+            const entries = Object.entries(raw).filter(([, m]) => m && typeof m === 'object' && m.name);
+            return entries.length ? entries : null;
+        }
+        return null;
+    }
+
     async function pollStatuses() {
-        const d = await apiFetch('/faction/?selections=basic');
-        if (!d || !d.members) { updatePill('API Error', true); return; }
+        let entries = normalizeMembers(await apiFetch('/v2/faction/members'));
+        if (!entries) entries = normalizeMembers(await apiFetch('/faction/?selections=members'));
+        if (!entries || !entries.length) { updatePill('API Error', true); return; }
         memberCache = {}; nameIndex = {};
         let counts = { online: 0, idle: 0, offline: 0 };
-        Object.entries(d.members).forEach(([id, m]) => {
+        entries.forEach(([id, m]) => {
             const rawStatus = (m.last_action && m.last_action.status ? m.last_action.status : 'Offline').toLowerCase();
             const status = rawStatus === 'online' ? 'online' : rawStatus === 'idle' ? 'idle' : 'offline';
             const rawState  = (m.status && m.status.state ? m.status.state : 'Okay').toLowerCase();
             const stateDesc = (m.status && m.status.description ? m.status.description : '');
             const position  = m.position || '';
-            memberCache[id] = { id, name: m.name, status, lastSeen: m.last_action ? m.last_action.timestamp : 0, state: rawState, stateDesc, position };
-            nameIndex[m.name.toLowerCase()] = id;
+            const name      = m.name || `User ${id}`;
+            memberCache[id] = { id, name, status, lastSeen: m.last_action ? m.last_action.timestamp : 0, state: rawState, stateDesc, position };
+            nameIndex[name.toLowerCase()] = id;
             counts[status]++;
         });
         updateAllDots();
@@ -373,6 +414,7 @@
     function startPoll() {
         clearInterval(pollTimer);
         if (!CFG.apiKey) { updatePill('No API Key', true); return; }
+        fetchFactionIdentity();
         pollStatuses();
         pollTimer = setInterval(pollStatuses, CFG.refreshInterval * 1000);
     }
@@ -1352,6 +1394,15 @@
         mentionSuggestPopup?.classList.remove('bfc-open');
     }
 
+    function matchesFactionLabel(text) {
+        if (!text) return false;
+        const t = String(text).toLowerCase();
+        if (t.includes('faction')) return true;
+        return [CFG.factionName, CFG.factionTag]
+            .filter(label => label && String(label).length >= 2)
+            .some(label => t.includes(String(label).toLowerCase()));
+    }
+
     function findFactionChatBox() {
         const selectors = [
             '#chatRoot [id^="faction-"]',
@@ -1363,6 +1414,17 @@
         for (const selector of selectors) {
             const visible = Array.from(document.querySelectorAll(selector)).find(isVisible);
             if (visible) return visible;
+        }
+
+        // Torn renames the faction channel header to the faction's own name, so
+        // match open chat boxes against the name/tag reported by the API.
+        const boxes = Array.from(document.querySelectorAll(
+            '#chatRoot [class*="chat-box"], #chatRoot [class*="chatBox"], [id*="chatRoot"] [class*="chat-box"], [class*="chatRoot"] [class*="chat-box"]'
+        )).filter(isVisible);
+        for (const box of boxes) {
+            if (!box.querySelector('textarea, [contenteditable="true"]')) continue;
+            const header = box.querySelector('[class*="header"], [class*="Header"], [class*="title"], [class*="Title"]');
+            if (matchesFactionLabel(header && header.textContent)) return box;
         }
 
         // Torn PDA can render chat with different/generated IDs. Locate it from
@@ -1377,11 +1439,13 @@
                 if (!fallback && node.querySelectorAll('textarea').length === 1) fallback = node;
                 const txt = (node.textContent || '').toLowerCase();
                 const idClass = `${node.id || ''} ${node.className || ''}`.toLowerCase();
-                const looksChat = /chat|faction/.test(idClass) || /message|faction/.test(hint) || txt.includes('faction');
+                const looksChat = /chat|faction/.test(idClass) || /message|faction/.test(hint) || matchesFactionLabel(txt);
                 const hasMessages = node.querySelector('[class*="box__"], [class*="message__"], [class*="virtualItem__"], a[href*="profiles.php"]');
                 if (looksChat && hasMessages) return node;
             }
-            if (/message|chat|faction/.test(hint) && fallback) return fallback;
+            if (/message|chat|faction/.test(hint) || matchesFactionLabel(hint)) {
+                if (fallback) return fallback;
+            }
         }
         return null;
     }
@@ -1577,9 +1641,9 @@
             const btn = document.getElementById('bfc-test-btn');
             btn.textContent = '⏳ Testing…';
             try {
-                const r = await fetch(`${API_BASE}/user/?selections=basic&key=${key}`);
-                const d = await r.json();
-                if (d.error) throw new Error(d.error.error);
+                const d = unwrap(await apiFetchWithKey('/v2/user/basic', key), 'basic')
+                       || unwrap(await apiFetchWithKey('/user/?selections=basic', key), 'basic');
+                if (!d || !d.name) throw new Error('Invalid key or no access');
                 CFG.username = d.name;
                 document.getElementById('bfc-disp-user').textContent = d.name;
                 saveCfg(CFG);
