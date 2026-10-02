@@ -1,11 +1,15 @@
 // ==UserScript==
 // @name         Better Faction Chat – Torn.com (Desktop + Torn PDA)
 // @namespace    https://torn.com/
-// @version      1.6.6
+// @version      1.6.7
 // @description  Desktop and Torn PDA faction chat tools: status, group tags, officer groups, search, timestamps and touch-friendly controls
 // @author       sercann
 // @match        https://www.torn.com/*
-// @grant        none
+// @grant        GM_setValue
+// @grant        GM_getValue
+// @grant        GM_xmlhttpRequest
+// @grant        GM_addStyle
+// @connect      api.torn.com
 // @run-at       document-start
 // @license      MIT
 // @updateURL    https://raw.githubusercontent.com/xDp64xG/Torn-Intel/main/scripts/tampermonkey/better-faction-chat.user.js
@@ -15,9 +19,10 @@
 (function () {
     'use strict';
 
-    const BFC_VERSION = '1.6.6';
+    const BFC_VERSION = '1.6.7';
     const STORE_KEY   = 'bfc_settings_v2';
     const API_BASE    = 'https://api.torn.com';
+    const PDA_KEY     = '###PDA-APIKEY###';
     const IS_TOUCH    = matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0;
     const IS_TORN_PDA = /torn\s*pda|tornpda/i.test(navigator.userAgent) || IS_TOUCH;
 
@@ -79,6 +84,10 @@
     }
 
     let CFG = loadCfg();
+    if (!CFG.apiKey && /^[a-zA-Z0-9]{16}$/.test(PDA_KEY)) {
+        CFG.apiKey = PDA_KEY;
+        saveCfg(CFG);
+    }
 
     const STATE_ICONS = {
         traveling: '✈️', abroad: '🌍', hospital: '🏥',
@@ -329,6 +338,69 @@
     let memberCache = {}, nameIndex = {}, pollTimer = null;
     let officerDraftIds = new Set((CFG.officerIds || []).map(String));
     const processedMsgs = [];
+    let lastApiError = '';
+
+    function withRequestTimeout(promise) {
+        return new Promise((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error('Torn API request timed out')), 20000);
+            Promise.resolve(promise).then(
+                value => { clearTimeout(timer); resolve(value); },
+                error => { clearTimeout(timer); reject(error); }
+            );
+        });
+    }
+
+    function showApiError(message) {
+        lastApiError = message;
+        updatePill('API Error: ' + message, true);
+        const el = document.getElementById('bfc-status-msg');
+        if (el) { el.textContent = message; el.style.color = CFG.mentionColor; }
+    }
+
+    async function requestApi(path, key) {
+        if (!key) throw new Error('No API key saved. Enter your key and click Save Settings.');
+        const sep = path.includes('?') ? '&' : '?';
+        const url = `${API_BASE}${path}${sep}key=${encodeURIComponent(key)}`;
+        let data;
+
+        if (typeof PDA_httpGet === 'function') {
+            const response = await withRequestTimeout(PDA_httpGet(url, {}));
+            if (Number(response.status) < 200 || Number(response.status) >= 300 || !response.status)
+                throw new Error(`HTTP ${response.status || 'unknown'}`);
+            try { data = JSON.parse(response.responseText); }
+            catch (_) { throw new Error('Torn returned an unreadable API response'); }
+        } else if (typeof GM_xmlhttpRequest === 'function') {
+            data = await withRequestTimeout(new Promise((resolve, reject) => {
+                GM_xmlhttpRequest({
+                    method: 'GET', url, timeout: 20000,
+                    onload: response => {
+                        if (response.status < 200 || response.status >= 300) {
+                            reject(new Error(`HTTP ${response.status}`));
+                            return;
+                        }
+                        try { resolve(JSON.parse(response.responseText)); }
+                        catch (_) { reject(new Error('Torn returned an unreadable API response')); }
+                    },
+                    onerror: () => reject(new Error('Could not connect to Torn API')),
+                    ontimeout: () => reject(new Error('Torn API request timed out'))
+                });
+            }));
+        } else {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), 20000);
+            let response;
+            try { response = await fetch(url, { signal: controller.signal }); }
+            catch (error) {
+                if (error.name === 'AbortError') throw new Error('Torn API request timed out');
+                throw error;
+            } finally { clearTimeout(timer); }
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            data = await response.json();
+        }
+
+        if (data.error) throw new Error(`Torn API ${data.error.code}: ${data.error.error}`);
+        return data;
+    }
 
     async function apiFetch(path) {
         if (!CFG.apiKey) return null;
@@ -337,12 +409,13 @@
 
     async function apiFetchWithKey(path, key) {
         try {
-            const sep = path.includes('?') ? '&' : '?';
-            const r = await fetch(`${API_BASE}${path}${sep}key=${encodeURIComponent(key)}`);
-            const d = await r.json();
-            if (d && d.error) throw new Error(d.error.error || 'API error');
-            return d;
-        } catch { return null; }
+            const data = await requestApi(path, key);
+            lastApiError = '';
+            return data;
+        } catch (error) {
+            showApiError(error.message || String(error));
+            return null;
+        }
     }
 
     // Torn API v2 nests some payloads under the selection name; v1 returns them flat.
@@ -979,7 +1052,7 @@
 
         statusPill = document.createElement('span');
         statusPill.id = 'bfc-status-pill';
-        statusPill.textContent = CFG.apiKey ? 'Loading…' : 'No API Key';
+        statusPill.textContent = lastApiError ? 'API Error: ' + lastApiError : CFG.apiKey ? 'Loading…' : 'No API Key';
 
         left.append(scrollBtn, searchBtn, memberBtn, tagsBtn);
         right.append(statusPill);
