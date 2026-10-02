@@ -42,9 +42,9 @@ def fetch_user_od_count(api_key: str, user_id: int, base_url: str, comment: str 
     )
     stats = payload.get("personalstats") or payload
     try:
-        count = int(stats["drugoverdoses"])
+        count = int(stats.get("drugoverdoses", stats.get("overdosed")))
     except (KeyError, TypeError, ValueError):
-        raise ValueError("Torn response did not contain the drugoverdoses stat.") from None
+        raise ValueError("Torn response did not contain the overdosed personal stat.") from None
     if count < 0:
         raise ValueError("Torn returned an invalid overdose count.")
     return count
