@@ -35,7 +35,7 @@ def _torn_request_json(path: str, params: dict, base_url: str, timeout: int = 20
 
 
 def fetch_user_od_count(api_key: str, user_id: int, base_url: str, comment: str = "TornIntel") -> int:
-    params = {"stat": "drugoverdoses", "key": api_key, "comment": comment}
+    params = {"cat": "drugs", "key": api_key, "comment": comment}
     payload = _torn_request_json(
         f"v2/user/{int(user_id)}/personalstats",
         params,
@@ -82,13 +82,13 @@ def _find_od_count(payload: dict) -> int | None:
             continue
         if not isinstance(current, dict):
             continue
-        for field in ("drugoverdoses", "overdosed"):
+        for field in ("overdoses", "drugoverdoses", "overdosed"):
             value = current.get(field)
             count = _coerce_od_count(value)
             if count is not None:
                 return count
         stat_name = str(current.get("stat") or current.get("name") or current.get("key") or "").lower()
-        if stat_name in ("drugoverdoses", "overdosed"):
+        if stat_name in ("overdoses", "drugoverdoses", "overdosed"):
             for value_key in ("value", "count", "amount"):
                 count = _coerce_od_count(current.get(value_key))
                 if count is not None:
