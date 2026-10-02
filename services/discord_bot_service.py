@@ -34,6 +34,7 @@ from cryptography.fernet import Fernet, InvalidToken
 
 
 from config.settings import Settings
+from modules.armoury.parser import ArmouryParser
 from repositories.bank_request_repository import (
     BANK_REQUEST_TIMEOUT_SECONDS,
     BANK_REQUESTS_DDL,
@@ -645,15 +646,54 @@ class ReviveDiscordStore:
     def get_armoury_item_info(self, item_id: int):
         conn = self._connect()
         try:
+            tables = {
+                str(row[0])
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                ).fetchall()
+            }
+            sources = [
+                f"SELECT item_name, item_category FROM {table} WHERE item_id = ?"
+                for table in ("item_prices", "armoury_news")
+                if table in tables
+            ]
+            if not sources:
+                return None
             row = conn.execute(
-                """
-                SELECT item_name, item_category FROM item_prices WHERE item_id = ?
-                UNION ALL
-                SELECT item_name, item_category FROM armoury_news WHERE item_id = ? LIMIT 1
-                """,
-                (int(item_id), int(item_id)),
+                " UNION ALL ".join(sources) + " LIMIT 1",
+                tuple(int(item_id) for _ in sources),
             ).fetchone()
             return dict(row) if row else None
+        finally:
+            conn.close()
+
+    def find_armoury_items_by_name(self, item_name: str):
+        name = str(item_name or "").strip()
+        if not name:
+            return []
+        conn = self._connect()
+        try:
+            tables = {
+                str(row[0])
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                ).fetchall()
+            }
+            sources = [
+                f"SELECT item_id, item_name, item_category FROM {table}"
+                for table in ("item_prices", "armoury_news")
+                if table in tables
+            ]
+            if not sources:
+                return []
+            rows = conn.execute(
+                "SELECT item_id, MAX(item_name) AS item_name, MAX(item_category) AS item_category FROM ("
+                + " UNION ALL ".join(sources)
+                + ") WHERE item_id > 0 AND LOWER(TRIM(item_name)) = LOWER(TRIM(?)) "
+                "GROUP BY item_id ORDER BY item_id",
+                (name,),
+            ).fetchall()
+            return [dict(row) for row in rows]
         finally:
             conn.close()
 
@@ -1860,6 +1900,7 @@ def serve_discord_bot(
     armoury_stock_alert_task = None
     overdose_alert_task = None
     bank_request_wakeup = asyncio.Event()
+    armoury_stock_wakeup = asyncio.Event()
 
     def embed_color(ok: bool):
         return 0x2ecc71 if ok else 0xe74c3c
@@ -3364,6 +3405,7 @@ def serve_discord_bot(
         poll_seconds = max(60, int(getattr(settings, "discord_armoury_poll_seconds", 3600) or 3600))
 
         while not bot.is_closed():
+            armoury_stock_wakeup.clear()
             for faction in settings.list_factions():
                 if not faction.faction_id:
                     continue
@@ -3390,7 +3432,10 @@ def serve_discord_bot(
                         logger.warning(
                             f"Armoury stock alert check failed for [{faction.tag}]: {type(exc).__name__}: {exc}"
                         )
-            await asyncio.sleep(poll_seconds)
+            try:
+                await asyncio.wait_for(armoury_stock_wakeup.wait(), timeout=poll_seconds)
+            except asyncio.TimeoutError:
+                pass
 
     async def overdose_alert_watcher():
         poll_seconds = max(60, int(getattr(settings, "discord_od_poll_seconds", 300) or 300))
@@ -3522,6 +3567,40 @@ def serve_discord_bot(
     async def item_autocomplete(_interaction, current: str):
         names = autocomplete.items(current=current, limit=25)
         return [app_commands.Choice(name=name[:100], value=name) for name in names[:25]]
+
+    async def resolve_armoury_item_matches(item_id: int | None = None, item_name: str | None = None):
+        if item_id is not None:
+            local = revive_store.get_armoury_item_info(item_id)
+            matches = [{"item_id": int(item_id), **local}] if local else []
+        else:
+            matches = revive_store.find_armoury_items_by_name(item_name or "")
+        if matches or gateway is None:
+            return matches
+
+        response = await asyncio.to_thread(gateway.torn_items, pool="GLOBAL")
+        raw_items = response.get("items", {}) if isinstance(response, dict) else {}
+        entries = raw_items.items() if isinstance(raw_items, dict) else enumerate(raw_items or [])
+        requested_name = str(item_name or "").strip().casefold()
+        for raw_id, payload in entries:
+            if not isinstance(payload, dict):
+                continue
+            try:
+                catalog_id = int(payload.get("id") or raw_id)
+            except (TypeError, ValueError):
+                continue
+            catalog_name = str(payload.get("name") or "").strip()
+            if item_id is not None:
+                if catalog_id != int(item_id):
+                    continue
+            elif catalog_name.casefold() != requested_name:
+                continue
+            local_category = ArmouryParser.get_category_from_api_type(payload.get("type"))
+            matches.append({
+                "item_id": catalog_id,
+                "item_name": catalog_name or f"Item {catalog_id}",
+                "item_category": local_category,
+            })
+        return matches
 
     async def category_autocomplete(_interaction, current: str):
         categories = autocomplete.categories(current=current, limit=25)
@@ -4389,9 +4468,10 @@ def serve_discord_bot(
 
     @bot.tree.command(name="ti_armoury_alert", description="Configure low-stock alerts for faction armouries")
     @app_commands.describe(
-        action="Set, remove, list thresholds, or set the faction alert channel",
+        action="Set/remove/list thresholds, look up an item, check stock now, or set the alert channel",
         faction="Faction to configure",
-        item_id="Torn item ID for set/remove",
+        item_id="Torn item ID (use this or item_name)",
+        item_name="Exact Torn item name (use this or item_id)",
         threshold="Alert when stock is at or below this quantity",
         category="Armoury category; inferred from synced item data when omitted",
         channel_ref="Channel ID or mention used for this faction's low-stock alerts",
@@ -4401,6 +4481,8 @@ def serve_discord_bot(
             app_commands.Choice(name="Set threshold", value="set"),
             app_commands.Choice(name="Remove threshold", value="remove"),
             app_commands.Choice(name="List thresholds", value="list"),
+            app_commands.Choice(name="Look up item", value="lookup"),
+            app_commands.Choice(name="Check stock now", value="check"),
             app_commands.Choice(name="Set alert channel", value="channel"),
         ],
         faction=[
@@ -4413,11 +4495,13 @@ def serve_discord_bot(
         ],
     )
     @app_commands.default_permissions(manage_channels=True)
+    @app_commands.autocomplete(item_name=item_autocomplete)
     async def ti_armoury_alert_slash(
         interaction: discord.Interaction,
         action: str,
         faction: str,
         item_id: int | None = None,
+        item_name: str | None = None,
         threshold: int | None = None,
         category: str | None = None,
         channel_ref: str | None = None,
@@ -4436,6 +4520,59 @@ def serve_discord_bot(
             ]
             lines.append(f"Channel: <#{current_channel}>" if current_channel else "Channel: not set")
             await interaction.response.send_message("\n".join(lines)[:1900], ephemeral=True)
+            return
+
+        if action == "check":
+            if not can_manage_alert_channels(interaction):
+                await interaction.response.send_message("Manage Channels permission is required.", ephemeral=True)
+                return
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            if not revive_store.list_armoury_thresholds(selected.faction_id):
+                await interaction.followup.send("No stock thresholds are configured for this faction.", ephemeral=True)
+                return
+            try:
+                alerts = await asyncio.to_thread(armoury_stock_tracker.check_faction, selected)
+            except Exception as exc:
+                await interaction.followup.send(
+                    f"Stock check failed: {type(exc).__name__}: {exc}", ephemeral=True
+                )
+                return
+            if not alerts:
+                await interaction.followup.send(
+                    f"Stock check succeeded for {selected.name}; no tracked items are at or below their thresholds.",
+                    ephemeral=True,
+                )
+                return
+            lines = [
+                f"{item['item_name']} [{item['item_id']}]: {item['amount']} in stock (threshold {item['threshold']})"
+                for item in alerts
+            ]
+            channel_id = resolve_armoury_stock_channel_id(selected.tag)
+            if channel_id is not None:
+                try:
+                    channel = bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
+                    await send_embed_chunks(
+                        channel.send,
+                        title=f"Armoury Stock Alert [{selected.tag}]",
+                        text="\n".join(lines),
+                        ok=False,
+                    )
+                    await interaction.followup.send(
+                        f"Found {len(alerts)} low-stock item(s) and posted them in <#{channel_id}>.",
+                        ephemeral=True,
+                    )
+                    return
+                except Exception as exc:
+                    await interaction.followup.send(
+                        f"Found low-stock items, but could not post to <#{channel_id}>: {type(exc).__name__}: {exc}\n"
+                        + "\n".join(lines),
+                        ephemeral=True,
+                    )
+                    return
+            await interaction.followup.send(
+                "Found low-stock items, but no alert channel is configured:\n" + "\n".join(lines),
+                ephemeral=True,
+            )
             return
 
         if action == "channel":
@@ -4459,6 +4596,7 @@ def serve_discord_bot(
                 await interaction.response.send_message("Choose a channel accessible in this server.", ephemeral=True)
                 return
             revive_store.set_setting(f"armoury_stock_channel_id_{selected.tag}", str(parsed_channel_id))
+            armoury_stock_wakeup.set()
             await interaction.response.send_message(
                 f"{selected.name} low-stock alerts will post in <#{parsed_channel_id}>.", ephemeral=True
             )
@@ -4467,12 +4605,56 @@ def serve_discord_bot(
         if not can_manage_alert_channels(interaction):
             await interaction.response.send_message("Manage Channels permission is required.", ephemeral=True)
             return
-        if item_id is None or item_id <= 0:
+        if (item_id is None) == (item_name is None):
+            await interaction.response.send_message(
+                "Provide exactly one of `item_id` or `item_name`.", ephemeral=True
+            )
+            return
+
+        if item_id is not None and item_id <= 0:
             await interaction.response.send_message("Provide a positive item ID.", ephemeral=True)
+            return
+
+        try:
+            matches = await resolve_armoury_item_matches(item_id, item_name)
+        except Exception as exc:
+            await interaction.response.send_message(
+                f"Item lookup failed: {type(exc).__name__}: {exc}", ephemeral=True
+            )
+            return
+        if not matches:
+            await interaction.response.send_message(
+                "Item not found in synced armoury data or Torn's item catalogue. Try an exact name or item ID.",
+                ephemeral=True,
+            )
+            return
+        if len(matches) > 1:
+            choices = "\n".join(
+                f"{match['item_name']} [{match['item_id']}]" for match in matches[:15]
+            )
+            await interaction.response.send_message(
+                "That name matches multiple item IDs. Use `item_id` to choose one:\n" + choices,
+                ephemeral=True,
+            )
+            return
+        resolved_item = matches[0]
+        item_id = int(resolved_item["item_id"])
+        resolved_name = str(resolved_item.get("item_name") or item_name or f"Item {item_id}")
+
+        if action == "lookup":
+            local_category = str(resolved_item.get("item_category") or "Unknown")
+            api_category = ARMOURY_CATEGORY_MAP.get(local_category.lower(), "Unknown")
+            await interaction.response.send_message(
+                f"{resolved_name} resolves to item ID `{item_id}`; "
+                f"local category: {local_category}; inventory category: {api_category}.",
+                ephemeral=True,
+            )
             return
 
         if action == "remove":
             removed = revive_store.remove_armoury_threshold(selected.faction_id, item_id)
+            if removed:
+                armoury_stock_wakeup.set()
             text = "Threshold removed." if removed else "No threshold was configured for that item."
             await interaction.response.send_message(text, ephemeral=True)
             return
@@ -4480,9 +4662,10 @@ def serve_discord_bot(
         if threshold is None or threshold < 0:
             await interaction.response.send_message("Provide a threshold of zero or greater.", ephemeral=True)
             return
-        item_info = revive_store.get_armoury_item_info(item_id) or {}
-        item_name = str(item_info.get("item_name") or f"Item {item_id}")
-        api_category = category or ARMOURY_CATEGORY_MAP.get(str(item_info.get("item_category") or "").lower())
+        inferred_category = ARMOURY_CATEGORY_MAP.get(
+            str(resolved_item.get("item_category") or "").lower()
+        )
+        api_category = category or inferred_category
         if not api_category:
             await interaction.response.send_message(
                 "Could not infer this item's armoury category. Choose `category` explicitly.", ephemeral=True
@@ -4492,12 +4675,19 @@ def serve_discord_bot(
             selected.faction_id,
             selected.tag,
             item_id,
-            item_name,
+            resolved_name,
             api_category,
             threshold,
         )
+        armoury_stock_wakeup.set()
+        channel_note = (
+            " The faction alert channel is not set yet; use action `Set alert channel`."
+            if resolve_armoury_stock_channel_id(selected.tag) is None
+            else ""
+        )
         await interaction.response.send_message(
-            f"Low-stock alert set for {item_name} [{item_id}] in {selected.name}: alert at {threshold} or below.",
+            f"Low-stock alert set for {resolved_name} [{item_id}] in {selected.name}: "
+            f"category {api_category}; alert at {threshold} or below.{channel_note}",
             ephemeral=True,
         )
 
