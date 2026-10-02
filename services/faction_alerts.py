@@ -64,26 +64,49 @@ def fetch_user_od_count(api_key: str, user_id: int, base_url: str, comment: str 
 
 
 def _find_od_count(payload: dict) -> int | None:
-    pending = [payload]
+    pending = [(payload, False)]
     while pending:
-        current = pending.pop()
+        current, selected_stat_context = pending.pop()
+        if isinstance(current, list):
+            if selected_stat_context and len(current) == 1:
+                count = _coerce_od_count(current[0])
+                if count is not None:
+                    return count
+            if selected_stat_context and len(current) == 2 and str(current[0]).lower() in (
+                "drugoverdoses", "overdosed"
+            ):
+                count = _coerce_od_count(current[1])
+                if count is not None:
+                    return count
+            pending.extend((item, selected_stat_context) for item in current if isinstance(item, (dict, list)))
+            continue
         if not isinstance(current, dict):
             continue
         for field in ("drugoverdoses", "overdosed"):
             value = current.get(field)
-            if value is None or isinstance(value, bool):
-                continue
-            try:
-                count = int(value)
-            except (TypeError, ValueError):
-                continue
-            if count >= 0:
+            count = _coerce_od_count(value)
+            if count is not None:
                 return count
-        pending.extend(value for value in current.values() if isinstance(value, dict))
-        for value in current.values():
-            if isinstance(value, list):
-                pending.extend(item for item in value if isinstance(item, dict))
+        stat_name = str(current.get("stat") or current.get("name") or current.get("key") or "").lower()
+        if stat_name in ("drugoverdoses", "overdosed"):
+            for value_key in ("value", "count", "amount"):
+                count = _coerce_od_count(current.get(value_key))
+                if count is not None:
+                    return count
+        for key, value in current.items():
+            if isinstance(value, (dict, list)):
+                pending.append((value, selected_stat_context or str(key).lower() == "personalstats"))
     return None
+
+
+def _coerce_od_count(value) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        return None
+    return count if count >= 0 else None
 
 
 def _response_field_paths(payload: dict, prefix: str = "", depth: int = 0) -> list[str]:
@@ -96,9 +119,14 @@ def _response_field_paths(payload: dict, prefix: str = "", depth: int = 0) -> li
         if isinstance(value, dict):
             paths.extend(_response_field_paths(value, path, depth + 1))
         elif isinstance(value, list):
-            for item in value:
+            if not value:
+                paths.append(f"{path}[] (empty)")
+            for index, item in enumerate(value[:5]):
+                item_path = f"{path}[{index}]"
                 if isinstance(item, dict):
-                    paths.extend(_response_field_paths(item, path, depth + 1))
+                    paths.extend(_response_field_paths(item, item_path, depth + 1))
+                else:
+                    paths.append(f"{item_path} ({type(item).__name__})")
     return paths
 
 
