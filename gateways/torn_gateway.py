@@ -184,6 +184,51 @@ class TornGateway:
             pool=pool,
         )
 
+    def faction_inventory(self, category, pool="default"):
+        """Get one category of a faction's cached inventory, paginating if needed."""
+        inventory = []
+        first_response = None
+        offset = 0
+
+        while True:
+            response = self._get_v2(
+                "faction",
+                "inventory",
+                pool=pool,
+                cat=category,
+                limit=100,
+                offset=offset,
+            )
+            if not isinstance(response, dict) or response.get("error"):
+                return response
+            if first_response is None:
+                first_response = response
+            page = response.get("inventory")
+            if not isinstance(page, list):
+                return response
+            inventory.extend(page)
+            metadata = response.get("_metadata") or {}
+            try:
+                total = int(metadata.get("total") or len(inventory))
+            except (TypeError, ValueError):
+                total = len(inventory)
+            if len(inventory) >= total or len(page) < 100:
+                break
+            offset += len(page)
+
+        first_response["inventory"] = inventory
+        return first_response
+
+    def faction_contributors(self, stat, pool="default"):
+        """Get current faction members' contribution values for a stat."""
+        return self._get(
+            "faction",
+            "contributors",
+            pool=pool,
+            stat=stat,
+            cat="current",
+        )
+
     def faction_balance(self, pool="default"):
         """Faction vault balances; the key owner needs faction API access."""
 

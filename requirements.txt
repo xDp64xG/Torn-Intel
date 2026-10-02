@@ -2,3 +2,4 @@ python-dotenv>=1.0
 requests>=2.31
 discord.py>=2.3
 Pillow>=10.0
+cryptography>=42.0

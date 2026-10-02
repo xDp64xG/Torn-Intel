@@ -30,6 +30,7 @@ from pathlib import Path
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError
+from cryptography.fernet import Fernet, InvalidToken
 
 
 from config.settings import Settings
@@ -41,6 +42,7 @@ from repositories.bank_request_repository import (
     bank_request_migrations,
 )
 from services.bank_balance import BankBalanceError, find_vault_payment, resolve_withdrawal
+from services.faction_alerts import ArmouryStockTracker, OverdoseTracker, validate_user_api_key
 from services.shoplifting_watcher import ShopliftingWatcher
 
 
@@ -58,6 +60,18 @@ REPORT_TYPES_BY_MODULE = {
     "armoury": ["player_usage", "category", "medical_summary", "loan_tracker"],
     "crimes": ["oc_item_audit", "oc_cpr", "oc_outside", "oc_delays"],
     "revives": ["requests_list"],
+}
+
+ARMOURY_CATEGORY_MAP = {
+    "weapon": "weapons", "weapons": "weapons",
+    "armor": "armor", "armour": "armor",
+    "temporary": "temporary",
+    "medical": "medical",
+    "consumable": "consumables", "consumables": "consumables",
+    "drug": "drugs", "drugs": "drugs",
+    "booster": "boosters", "boosters": "boosters",
+    "utility": "utilities", "utilities": "utilities",
+    "loot": "loot",
 }
 
 
@@ -266,10 +280,19 @@ class DbAutocomplete:
 
 class ReviveDiscordStore:
 
-    def __init__(self, database_path: Path):
+    def __init__(self, database_path: Path, api_key_encryption_key: str | None = None):
         self.database_path = Path(database_path)
+        self.api_key_encryption_key = str(api_key_encryption_key or "").strip()
         self._ensure_tables()
         self._ensure_notification_columns()
+
+    def _key_cipher(self):
+        if not self.api_key_encryption_key:
+            raise RuntimeError("TORN_USER_API_KEY_ENCRYPTION_KEY is not configured.")
+        try:
+            return Fernet(self.api_key_encryption_key.encode("ascii"))
+        except (ValueError, UnicodeEncodeError):
+            raise RuntimeError("TORN_USER_API_KEY_ENCRYPTION_KEY must be a valid Fernet key.") from None
 
     #######################################################
 
@@ -314,6 +337,45 @@ class ReviveDiscordStore:
                     setting_key TEXT PRIMARY KEY,
                     setting_value TEXT,
                     updated_at INTEGER NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS discord_user_api_keys (
+                    discord_user_id TEXT PRIMARY KEY,
+                    torn_user_id INTEGER NOT NULL,
+                    faction_id INTEGER NOT NULL,
+                    faction_tag TEXT NOT NULL,
+                    api_key_ciphertext TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS od_tracker_users (
+                    faction_id INTEGER NOT NULL,
+                    faction_tag TEXT NOT NULL,
+                    torn_user_id INTEGER NOT NULL,
+                    user_name TEXT NOT NULL,
+                    last_known_od_count INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    PRIMARY KEY (faction_id, torn_user_id)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS armoury_stock_alert_thresholds (
+                    faction_id INTEGER NOT NULL,
+                    faction_tag TEXT NOT NULL,
+                    item_id INTEGER NOT NULL,
+                    item_name TEXT NOT NULL,
+                    item_category TEXT NOT NULL,
+                    threshold INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    PRIMARY KEY (faction_id, item_id)
                 )
                 """
             )
@@ -408,6 +470,15 @@ class ReviveDiscordStore:
         now = int(time.time())
         conn = self._connect()
         try:
+            existing = conn.execute(
+                "SELECT torn_user_id FROM discord_user_links WHERE discord_user_id = ? LIMIT 1",
+                (str(discord_user_id),),
+            ).fetchone()
+            if existing and int(existing["torn_user_id"]) != int(torn_user_id):
+                conn.execute(
+                    "DELETE FROM discord_user_api_keys WHERE discord_user_id = ?",
+                    (str(discord_user_id),),
+                )
             conn.execute(
                 """
                 INSERT INTO discord_user_links (discord_user_id, torn_user_id, updated_at)
@@ -432,6 +503,201 @@ class ReviveDiscordStore:
                 (str(discord_user_id),),
             ).fetchone()
             return int(row["torn_user_id"]) if row else None
+        finally:
+            conn.close()
+
+    def set_user_api_key(
+        self,
+        discord_user_id: int,
+        torn_user_id: int,
+        faction_id: int,
+        faction_tag: str,
+        api_key: str,
+        user_name: str,
+        od_count: int,
+    ):
+        ciphertext = self._key_cipher().encrypt(str(api_key).encode("utf-8")).decode("ascii")
+        conn = self._connect()
+        try:
+            conn.execute(
+                """
+                INSERT INTO discord_user_api_keys (
+                    discord_user_id, torn_user_id, faction_id, faction_tag,
+                    api_key_ciphertext, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(discord_user_id) DO UPDATE SET
+                    torn_user_id = excluded.torn_user_id,
+                    faction_id = excluded.faction_id,
+                    faction_tag = excluded.faction_tag,
+                    api_key_ciphertext = excluded.api_key_ciphertext,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    str(discord_user_id), int(torn_user_id), int(faction_id),
+                    str(faction_tag).upper(), ciphertext, int(time.time()),
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO od_tracker_users (
+                    faction_id, faction_tag, torn_user_id, user_name, last_known_od_count, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(faction_id, torn_user_id) DO UPDATE SET
+                    faction_tag = excluded.faction_tag,
+                    user_name = excluded.user_name,
+                    last_known_od_count = excluded.last_known_od_count,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    int(faction_id), str(faction_tag).upper(), int(torn_user_id),
+                    str(user_name or f"User {torn_user_id}"), int(od_count), int(time.time()),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_user_api_keys_for_faction(self, faction_id: int):
+        cipher = self._key_cipher()
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                """
+                SELECT k.*, u.user_name
+                FROM discord_user_api_keys AS k
+                LEFT JOIN od_tracker_users AS u
+                    ON u.faction_id = k.faction_id AND u.torn_user_id = k.torn_user_id
+                WHERE k.faction_id = ? ORDER BY k.torn_user_id
+                """,
+                (int(faction_id),),
+            ).fetchall()
+            result = []
+            for row in rows:
+                item = dict(row)
+                try:
+                    item["api_key"] = cipher.decrypt(item.pop("api_key_ciphertext").encode("ascii")).decode("utf-8")
+                except (InvalidToken, UnicodeEncodeError, UnicodeDecodeError):
+                    continue
+                result.append(item)
+            return result
+        finally:
+            conn.close()
+
+    def get_od_baseline(self, faction_id: int, torn_user_id: int):
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                """
+                SELECT user_name, last_known_od_count FROM od_tracker_users
+                WHERE faction_id = ? AND torn_user_id = ? LIMIT 1
+                """,
+                (int(faction_id), int(torn_user_id)),
+            ).fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+
+    def set_od_baseline(
+        self,
+        faction_id: int,
+        faction_tag: str,
+        torn_user_id: int,
+        user_name: str,
+        od_count: int,
+    ):
+        conn = self._connect()
+        try:
+            conn.execute(
+                """
+                INSERT INTO od_tracker_users (
+                    faction_id, faction_tag, torn_user_id, user_name, last_known_od_count, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(faction_id, torn_user_id) DO UPDATE SET
+                    faction_tag = excluded.faction_tag,
+                    user_name = excluded.user_name,
+                    last_known_od_count = excluded.last_known_od_count,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    int(faction_id), str(faction_tag).upper(), int(torn_user_id),
+                    str(user_name or f"User {torn_user_id}"), int(od_count), int(time.time()),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def list_armoury_thresholds(self, faction_id: int):
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                """
+                SELECT item_id, item_name, item_category, threshold
+                FROM armoury_stock_alert_thresholds
+                WHERE faction_id = ? ORDER BY item_name COLLATE NOCASE
+                """,
+                (int(faction_id),),
+            ).fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            conn.close()
+
+    def get_armoury_item_info(self, item_id: int):
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                """
+                SELECT item_name, item_category FROM item_prices WHERE item_id = ?
+                UNION ALL
+                SELECT item_name, item_category FROM armoury_news WHERE item_id = ? LIMIT 1
+                """,
+                (int(item_id), int(item_id)),
+            ).fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+
+    def set_armoury_threshold(
+        self,
+        faction_id: int,
+        faction_tag: str,
+        item_id: int,
+        item_name: str,
+        item_category: str,
+        threshold: int,
+    ):
+        conn = self._connect()
+        try:
+            conn.execute(
+                """
+                INSERT INTO armoury_stock_alert_thresholds (
+                    faction_id, faction_tag, item_id, item_name, item_category, threshold, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(faction_id, item_id) DO UPDATE SET
+                    faction_tag = excluded.faction_tag,
+                    item_name = excluded.item_name,
+                    item_category = excluded.item_category,
+                    threshold = excluded.threshold,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    int(faction_id), str(faction_tag).upper(), int(item_id),
+                    str(item_name), str(item_category), int(threshold), int(time.time()),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def remove_armoury_threshold(self, faction_id: int, item_id: int):
+        conn = self._connect()
+        try:
+            cursor = conn.execute(
+                "DELETE FROM armoury_stock_alert_thresholds WHERE faction_id = ? AND item_id = ?",
+                (int(faction_id), int(item_id)),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
         finally:
             conn.close()
 
@@ -1511,7 +1777,12 @@ def serve_discord_bot(
     bridge = CliBridge(repo_root=repo_root, timeout_seconds=timeout_seconds)
     settings = settings or Settings()
     autocomplete = DbAutocomplete(settings.database_path)
-    revive_store = ReviveDiscordStore(settings.database_path)
+    revive_store = ReviveDiscordStore(
+        settings.database_path,
+        api_key_encryption_key=getattr(settings, "torn_user_api_key_encryption_key", ""),
+    )
+    armoury_stock_tracker = ArmouryStockTracker(gateway, revive_store)
+    overdose_tracker = OverdoseTracker(gateway, revive_store, settings, logger)
 
     async def resolve_torn_id_from_display_name(user):
         if gateway is None:
@@ -1586,6 +1857,8 @@ def serve_discord_bot(
     shoplifting_alert_task = None
     attacks_sync_task = None
     bank_request_alert_task = None
+    armoury_stock_alert_task = None
+    overdose_alert_task = None
     bank_request_wakeup = asyncio.Event()
 
     def embed_color(ok: bool):
@@ -1633,6 +1906,28 @@ def serve_discord_bot(
         if settings.discord_oc_delay_channel_id:
             return int(settings.discord_oc_delay_channel_id)
         return int(default_channel_id) if default_channel_id is not None else None
+
+    def resolve_armoury_stock_channel_id(faction_tag: str):
+        configured = revive_store.get_setting(f"armoury_stock_channel_id_{str(faction_tag).upper()}")
+        return int(configured) if configured and str(configured).isdigit() else None
+
+    def resolve_od_alert_channel_id(faction_tag: str):
+        configured = revive_store.get_setting(f"od_alert_channel_id_{str(faction_tag).upper()}")
+        return int(configured) if configured and str(configured).isdigit() else None
+
+    def can_manage_alert_channels(interaction):
+        guild = interaction.guild
+        if guild is None:
+            return False
+        member = guild.get_member(interaction.user.id)
+        permissions = getattr(interaction, "permissions", None)
+        if permissions and (permissions.administrator or permissions.manage_guild or permissions.manage_channels):
+            return True
+        guild_permissions = getattr(member, "guild_permissions", None)
+        return bool(
+            guild_permissions
+            and (guild_permissions.administrator or guild_permissions.manage_guild or guild_permissions.manage_channels)
+        )
 
     def shoplifting_setting_key(area: str, name: str):
         # jewelry_store keeps the original key names so existing configuration keeps working.
@@ -3065,6 +3360,70 @@ def serve_discord_bot(
 
             await asyncio.sleep(poll_seconds)
 
+    async def armoury_stock_alert_watcher():
+        poll_seconds = max(60, int(getattr(settings, "discord_armoury_poll_seconds", 3600) or 3600))
+
+        while not bot.is_closed():
+            for faction in settings.list_factions():
+                if not faction.faction_id:
+                    continue
+                thresholds = revive_store.list_armoury_thresholds(faction.faction_id)
+                channel_id = resolve_armoury_stock_channel_id(faction.tag)
+                if not thresholds or channel_id is None:
+                    continue
+                try:
+                    channel = bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
+                    alerts = await asyncio.to_thread(armoury_stock_tracker.check_faction, faction)
+                    if alerts:
+                        lines = [
+                            f"{item['item_name']} [{item['item_id']}]: {item['amount']} in stock (threshold {item['threshold']})"
+                            for item in alerts
+                        ]
+                        await send_embed_chunks(
+                            channel.send,
+                            title=f"Armoury Stock Alert [{faction.tag}]",
+                            text="\n".join(lines),
+                            ok=False,
+                        )
+                except Exception as exc:
+                    if logger:
+                        logger.warning(
+                            f"Armoury stock alert check failed for [{faction.tag}]: {type(exc).__name__}: {exc}"
+                        )
+            await asyncio.sleep(poll_seconds)
+
+    async def overdose_alert_watcher():
+        poll_seconds = max(60, int(getattr(settings, "discord_od_poll_seconds", 300) or 300))
+
+        while not bot.is_closed():
+            for faction in settings.list_factions():
+                if not faction.faction_id:
+                    continue
+                channel_id = resolve_od_alert_channel_id(faction.tag)
+                if channel_id is None:
+                    continue
+                try:
+                    channel = bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
+                    alerts = await asyncio.to_thread(overdose_tracker.check_faction, faction)
+                    if alerts:
+                        lines = [
+                            f"{item['user_name']} [{item['torn_user_id']}] "
+                            f"OD count: {item['previous_count']} -> {item['od_count']} (+{item['delta']})"
+                            for item in alerts
+                        ]
+                        await send_embed_chunks(
+                            channel.send,
+                            title=f"Drug Overdose Alert [{faction.tag}]",
+                            text="\n".join(lines),
+                            ok=False,
+                        )
+                except Exception as exc:
+                    if logger:
+                        logger.warning(
+                            f"OD tracker check failed for [{faction.tag}]: {type(exc).__name__}: {exc}"
+                        )
+            await asyncio.sleep(poll_seconds)
+
     async def attacks_sync_watcher():
         """Keep attacks synced live for every configured faction without a separate `watch attacks` process."""
         poll_seconds = max(5, int(getattr(settings, "discord_attacks_poll_seconds", 15) or 15))
@@ -3200,7 +3559,7 @@ def serve_discord_bot(
 
     @bot.event
     async def on_ready():
-        nonlocal revive_watcher_task, revive_request_alert_task, oc_delay_alert_task, shoplifting_alert_task, attacks_sync_task, bank_request_alert_task
+        nonlocal revive_watcher_task, revive_request_alert_task, oc_delay_alert_task, shoplifting_alert_task, attacks_sync_task, bank_request_alert_task, armoury_stock_alert_task, overdose_alert_task
         if logger:
             logger.success(f"Discord bot logged in as {bot.user}")
             try:
@@ -3262,6 +3621,16 @@ def serve_discord_bot(
             oc_delay_alert_task = asyncio.create_task(oc_delay_alert_watcher())
             if logger:
                 logger.info("Started OC delay alert watcher task")
+
+        if armoury_stock_alert_task is None or armoury_stock_alert_task.done():
+            armoury_stock_alert_task = asyncio.create_task(armoury_stock_alert_watcher())
+            if logger:
+                logger.info("Started armoury stock alert watcher task")
+
+        if overdose_alert_task is None or overdose_alert_task.done():
+            overdose_alert_task = asyncio.create_task(overdose_alert_watcher())
+            if logger:
+                logger.info("Started OD tracker task")
 
         if shoplifting_alert_task is None or shoplifting_alert_task.done():
             shoplifting_alert_task = asyncio.create_task(shoplifting_alert_watcher())
@@ -3454,6 +3823,104 @@ def serve_discord_bot(
             text=text,
             ok=ok,
         )
+
+    class TornApiKeyModal(discord.ui.Modal, title="Add Your Torn API Key"):
+        api_key = discord.ui.TextInput(
+            label="Torn API key",
+            placeholder="Paste your key here",
+            required=True,
+            min_length=16,
+            max_length=128,
+        )
+
+        def __init__(self, faction_tag: str):
+            super().__init__(timeout=300)
+            self.faction_tag = faction_tag
+
+        async def on_submit(self, interaction: discord.Interaction):
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            linked_torn_id = revive_store.get_user_torn_id(interaction.user.id)
+            if not linked_torn_id:
+                await interaction.followup.send(
+                    "Link your Torn account first with `/add`, then submit your key again.",
+                    ephemeral=True,
+                )
+                return
+
+            faction = settings.get_faction(self.faction_tag)
+            if not faction or not faction.faction_id:
+                await interaction.followup.send(
+                    f"Faction `{self.faction_tag}` has no configured Torn faction ID.",
+                    ephemeral=True,
+                )
+                return
+
+            api_key = str(self.api_key.value or "").strip()
+            try:
+                validation = await asyncio.to_thread(
+                    validate_user_api_key,
+                    api_key,
+                    int(linked_torn_id),
+                    int(faction.faction_id),
+                    settings.base_url,
+                    getattr(settings, "comment", "TornIntel"),
+                )
+                revive_store.set_user_api_key(
+                    discord_user_id=int(interaction.user.id),
+                    torn_user_id=int(linked_torn_id),
+                    faction_id=int(faction.faction_id),
+                    faction_tag=faction.tag,
+                    api_key=api_key,
+                    user_name=validation["user_name"],
+                    od_count=validation["od_count"],
+                )
+            except (ValueError, RuntimeError) as exc:
+                await interaction.followup.send(f"API key was not saved: {exc}", ephemeral=True)
+                return
+            except Exception as exc:
+                if logger:
+                    logger.warning(f"Torn API key validation failed ({type(exc).__name__})")
+                await interaction.followup.send(
+                    "API key was not saved because validation failed. Check the key and try again.",
+                    ephemeral=True,
+                )
+                return
+
+            await interaction.followup.send(
+                f"API key validated and saved for {faction.name}. Current OD count ({validation['od_count']}) set as the tracking baseline.",
+                ephemeral=True,
+            )
+
+    @bot.tree.command(name="ti_add_api_key", description="Securely add your Torn API key for overdose tracking")
+    @app_commands.describe(faction="Faction to associate with your linked Torn account")
+    @app_commands.choices(faction=[
+        app_commands.Choice(name=f"{item.tag} - {item.name}"[:100], value=item.tag)
+        for item in settings.list_factions()[:25]
+    ])
+    async def ti_add_api_key_slash(interaction: discord.Interaction, faction: str):
+        if not getattr(settings, "torn_user_api_key_encryption_key", ""):
+            await interaction.response.send_message(
+                "User API-key storage is not enabled. The bot administrator must configure `TORN_USER_API_KEY_ENCRYPTION_KEY`.",
+                ephemeral=True,
+            )
+            return
+        if not revive_store.get_user_torn_id(interaction.user.id):
+            await interaction.response.send_message(
+                "Link your Torn account first with `/add`.", ephemeral=True
+            )
+            return
+        selected_faction = settings.get_faction(faction)
+        if not selected_faction or not selected_faction.faction_id:
+            await interaction.response.send_message(
+                f"Faction `{faction}` has no configured Torn faction ID.", ephemeral=True
+            )
+            return
+        try:
+            revive_store._key_cipher()
+        except RuntimeError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        await interaction.response.send_modal(TornApiKeyModal(selected_faction.tag))
 
     @bot.tree.command(name="revive", description="Request a revive for a target Torn ID")
     @app_commands.describe(target_id="Optional target Torn ID (omit for yourself)")
@@ -3919,6 +4386,166 @@ def serve_discord_bot(
                 text=f"No explicit OC delay channel set{faction_label}. Alerts are disabled until a channel is configured.",
                 ok=True,
             )
+
+    @bot.tree.command(name="ti_armoury_alert", description="Configure low-stock alerts for faction armouries")
+    @app_commands.describe(
+        action="Set, remove, list thresholds, or set the faction alert channel",
+        faction="Faction to configure",
+        item_id="Torn item ID for set/remove",
+        threshold="Alert when stock is at or below this quantity",
+        category="Armoury category; inferred from synced item data when omitted",
+        channel_ref="Channel ID or mention used for this faction's low-stock alerts",
+    )
+    @app_commands.choices(
+        action=[
+            app_commands.Choice(name="Set threshold", value="set"),
+            app_commands.Choice(name="Remove threshold", value="remove"),
+            app_commands.Choice(name="List thresholds", value="list"),
+            app_commands.Choice(name="Set alert channel", value="channel"),
+        ],
+        faction=[
+            app_commands.Choice(name=f"{item.tag} - {item.name}"[:100], value=item.tag)
+            for item in settings.list_factions()[:25]
+        ],
+        category=[
+            app_commands.Choice(name=category.title(), value=category)
+            for category in ("weapons", "armor", "temporary", "medical", "consumables", "drugs", "boosters", "utilities", "loot")
+        ],
+    )
+    @app_commands.default_permissions(manage_channels=True)
+    async def ti_armoury_alert_slash(
+        interaction: discord.Interaction,
+        action: str,
+        faction: str,
+        item_id: int | None = None,
+        threshold: int | None = None,
+        category: str | None = None,
+        channel_ref: str | None = None,
+    ):
+        selected = settings.get_faction(faction)
+        if not selected or not selected.faction_id:
+            await interaction.response.send_message("That faction has no configured Torn faction ID.", ephemeral=True)
+            return
+
+        if action == "list":
+            rows = revive_store.list_armoury_thresholds(selected.faction_id)
+            current_channel = resolve_armoury_stock_channel_id(selected.tag)
+            lines = [
+                f"{row['item_name']} [{row['item_id']}] <= {row['threshold']} ({row['item_category']})"
+                for row in rows
+            ]
+            lines.append(f"Channel: <#{current_channel}>" if current_channel else "Channel: not set")
+            await interaction.response.send_message("\n".join(lines)[:1900], ephemeral=True)
+            return
+
+        if action == "channel":
+            if not can_manage_alert_channels(interaction):
+                await interaction.response.send_message("Manage Channels permission is required.", ephemeral=True)
+                return
+            if channel_ref is None:
+                current_channel = resolve_armoury_stock_channel_id(selected.tag)
+                text = f"Current channel: <#{current_channel}>" if current_channel else "No channel configured."
+                await interaction.response.send_message(text, ephemeral=True)
+                return
+            parsed_channel_id = _parse_channel_id(channel_ref)
+            if parsed_channel_id is None:
+                await interaction.response.send_message("Use a channel ID or mention like <#123456789012345678>.", ephemeral=True)
+                return
+            try:
+                target_channel = bot.get_channel(parsed_channel_id) or await bot.fetch_channel(parsed_channel_id)
+            except Exception:
+                target_channel = None
+            if target_channel is None or target_channel.guild.id != interaction.guild.id:
+                await interaction.response.send_message("Choose a channel accessible in this server.", ephemeral=True)
+                return
+            revive_store.set_setting(f"armoury_stock_channel_id_{selected.tag}", str(parsed_channel_id))
+            await interaction.response.send_message(
+                f"{selected.name} low-stock alerts will post in <#{parsed_channel_id}>.", ephemeral=True
+            )
+            return
+
+        if not can_manage_alert_channels(interaction):
+            await interaction.response.send_message("Manage Channels permission is required.", ephemeral=True)
+            return
+        if item_id is None or item_id <= 0:
+            await interaction.response.send_message("Provide a positive item ID.", ephemeral=True)
+            return
+
+        if action == "remove":
+            removed = revive_store.remove_armoury_threshold(selected.faction_id, item_id)
+            text = "Threshold removed." if removed else "No threshold was configured for that item."
+            await interaction.response.send_message(text, ephemeral=True)
+            return
+
+        if threshold is None or threshold < 0:
+            await interaction.response.send_message("Provide a threshold of zero or greater.", ephemeral=True)
+            return
+        item_info = revive_store.get_armoury_item_info(item_id) or {}
+        item_name = str(item_info.get("item_name") or f"Item {item_id}")
+        api_category = category or ARMOURY_CATEGORY_MAP.get(str(item_info.get("item_category") or "").lower())
+        if not api_category:
+            await interaction.response.send_message(
+                "Could not infer this item's armoury category. Choose `category` explicitly.", ephemeral=True
+            )
+            return
+        revive_store.set_armoury_threshold(
+            selected.faction_id,
+            selected.tag,
+            item_id,
+            item_name,
+            api_category,
+            threshold,
+        )
+        await interaction.response.send_message(
+            f"Low-stock alert set for {item_name} [{item_id}] in {selected.name}: alert at {threshold} or below.",
+            ephemeral=True,
+        )
+
+    @bot.tree.command(name="ti_od_channel", description="Set or view a faction's overdose alert channel")
+    @app_commands.describe(
+        faction="Faction whose OD alerts to route",
+        channel_ref="Channel ID or mention for this faction's overdose alerts; omit to view the current setting",
+    )
+    @app_commands.choices(faction=[
+        app_commands.Choice(name=f"{item.tag} - {item.name}"[:100], value=item.tag)
+        for item in settings.list_factions()[:25]
+    ])
+    @app_commands.default_permissions(manage_channels=True)
+    async def ti_od_channel_slash(
+        interaction: discord.Interaction,
+        faction: str,
+        channel_ref: str | None = None,
+    ):
+        selected = settings.get_faction(faction)
+        if not selected or not selected.faction_id:
+            await interaction.response.send_message("Unknown faction or no Torn faction ID configured.", ephemeral=True)
+            return
+        if channel_ref is None:
+            current_channel = resolve_od_alert_channel_id(selected.tag)
+            text = f"Current channel: <#{current_channel}>" if current_channel else "No OD channel configured."
+            await interaction.response.send_message(text, ephemeral=True)
+            return
+        if not can_manage_alert_channels(interaction):
+            await interaction.response.send_message("Manage Channels permission is required.", ephemeral=True)
+            return
+        if interaction.guild is None:
+            await interaction.response.send_message("Run this command in a server channel.", ephemeral=True)
+            return
+        parsed_channel_id = _parse_channel_id(channel_ref)
+        if parsed_channel_id is None:
+            await interaction.response.send_message("Use a channel ID or mention like <#123456789012345678>.", ephemeral=True)
+            return
+        try:
+            target_channel = bot.get_channel(parsed_channel_id) or await bot.fetch_channel(parsed_channel_id)
+        except Exception:
+            target_channel = None
+        if target_channel is None or target_channel.guild.id != interaction.guild.id:
+            await interaction.response.send_message("Choose a channel accessible in this server.", ephemeral=True)
+            return
+        revive_store.set_setting(f"od_alert_channel_id_{selected.tag}", str(parsed_channel_id))
+        await interaction.response.send_message(
+            f"{selected.name} overdose alerts will post in <#{parsed_channel_id}>.", ephemeral=True
+        )
 
     @bot.tree.command(name="ti_shoplifting", description="Configure shoplifting alerts per area")
     @app_commands.describe(
