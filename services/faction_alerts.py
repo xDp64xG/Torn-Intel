@@ -40,14 +40,54 @@ def fetch_user_od_count(api_key: str, user_id: int, base_url: str, comment: str 
         {"stat": "drugoverdoses", "key": api_key, "comment": comment},
         base_url,
     )
-    stats = payload.get("personalstats") or payload
-    try:
-        count = int(stats.get("drugoverdoses", stats.get("overdosed")))
-    except (KeyError, TypeError, ValueError):
-        raise ValueError("Torn response did not contain the overdosed personal stat.") from None
+    count = _find_od_count(payload)
+    if count is None:
+        fields = ", ".join(_response_field_paths(payload)[:12]) or "none"
+        raise ValueError(
+            f"Torn response did not contain the overdosed personal stat (response fields: {fields})."
+        )
     if count < 0:
         raise ValueError("Torn returned an invalid overdose count.")
     return count
+
+
+def _find_od_count(payload: dict) -> int | None:
+    pending = [payload]
+    while pending:
+        current = pending.pop()
+        if not isinstance(current, dict):
+            continue
+        for field in ("drugoverdoses", "overdosed"):
+            value = current.get(field)
+            if value is None or isinstance(value, bool):
+                continue
+            try:
+                count = int(value)
+            except (TypeError, ValueError):
+                continue
+            if count >= 0:
+                return count
+        pending.extend(value for value in current.values() if isinstance(value, dict))
+        for value in current.values():
+            if isinstance(value, list):
+                pending.extend(item for item in value if isinstance(item, dict))
+    return None
+
+
+def _response_field_paths(payload: dict, prefix: str = "", depth: int = 0) -> list[str]:
+    if not isinstance(payload, dict) or depth >= 4:
+        return []
+    paths = []
+    for key, value in payload.items():
+        path = f"{prefix}.{key}" if prefix else str(key)
+        paths.append(path)
+        if isinstance(value, dict):
+            paths.extend(_response_field_paths(value, path, depth + 1))
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    paths.extend(_response_field_paths(item, path, depth + 1))
+    return paths
 
 
 def validate_user_api_key(
