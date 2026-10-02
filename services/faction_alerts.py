@@ -35,16 +35,28 @@ def _torn_request_json(path: str, params: dict, base_url: str, timeout: int = 20
 
 
 def fetch_user_od_count(api_key: str, user_id: int, base_url: str, comment: str = "TornIntel") -> int:
+    params = {"stat": "drugoverdoses", "key": api_key, "comment": comment}
     payload = _torn_request_json(
         f"v2/user/{int(user_id)}/personalstats",
-        {"stat": "drugoverdoses", "key": api_key, "comment": comment},
+        params,
         base_url,
     )
     count = _find_od_count(payload)
+    if count is not None:
+        return count
+
+    v2_fields = ", ".join(_response_field_paths(payload)[:12]) or "none"
+    v1_payload = _torn_request_json(
+        f"user/{int(user_id)}/",
+        {"selections": "personalstats", **params},
+        base_url,
+    )
+    count = _find_od_count(v1_payload)
     if count is None:
-        fields = ", ".join(_response_field_paths(payload)[:12]) or "none"
+        v1_fields = ", ".join(_response_field_paths(v1_payload)[:12]) or "none"
         raise ValueError(
-            f"Torn response did not contain the overdosed personal stat (response fields: {fields})."
+            "Torn responses did not contain the overdosed personal stat "
+            f"(v2 fields: {v2_fields}; v1 fields: {v1_fields})."
         )
     if count < 0:
         raise ValueError("Torn returned an invalid overdose count.")
@@ -80,7 +92,7 @@ def _response_field_paths(payload: dict, prefix: str = "", depth: int = 0) -> li
     paths = []
     for key, value in payload.items():
         path = f"{prefix}.{key}" if prefix else str(key)
-        paths.append(path)
+        paths.append(f"{path} ({type(value).__name__})")
         if isinstance(value, dict):
             paths.extend(_response_field_paths(value, path, depth + 1))
         elif isinstance(value, list):
