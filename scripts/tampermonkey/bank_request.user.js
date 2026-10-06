@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TornIntel Bank Request
 // @namespace    http://tampermonkey.net/
-// @version      0.6.0
+// @version      0.6.1
 // @description  Request money from the faction vault; posts to the TornIntel Discord bot with a prefilled fulfill link.
 // @author       TornIntel
 // @match        https://www.torn.com/*
@@ -396,7 +396,7 @@
         const amount = `$${Number(row.amount || 0).toLocaleString()}`;
         const reason = String(row.resolution_note || '').trim();
         if (row.status === 'expired') {
-            return ['Bank request expired', `Your request for ${amount} wasn't fulfilled within 1 hour.`];
+            return ['Bank request expired', `Your request for ${amount} reached its 1-hour pending limit. The countdown was paused while a banker was processing it.`];
         }
         const by = row.resolved_by ? ` by ${row.resolved_by}` : '';
         return ['Bank request cancelled', `Your request for ${amount} was cancelled${by}.${reason ? ` Reason: ${reason}` : ''}`];

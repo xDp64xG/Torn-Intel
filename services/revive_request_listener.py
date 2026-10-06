@@ -15,10 +15,26 @@ from modules.revives.sync import ReviveSync
 from repositories.bank_request_repository import BankRequestRepository
 from repositories.revive_request_repository import ReviveRequestRepository
 from services.bank_balance import resolve_withdrawal
+from services.revive_operations import ReviveOperations, revive_payment_text
 from utils.colors import highlight, info, muted, success
 
 
 ID_SUFFIX_RE = re.compile(r"^(?P<name>.*?)\s*\[(?P<id>\d+)\]\s*$")
+
+
+def add_revive_payment_details(operations, notification):
+    event_type = str(notification.get("event_type") or "revive_request_fulfilled").lower()
+    if event_type in ("revive_request_received", "request_received"):
+        return notification
+    context = operations.payment_context(notification["request_id"])
+    return {
+        **notification,
+        "contract_id": context["contract_id"],
+        "payment_review_required": context["needs_review"],
+        "payment_instruction": revive_payment_text(
+            context, str(notification.get("fulfilled_by_name") or notification.get("fulfilled_by_id") or "the reviver"),
+        ),
+    }
 
 
 class ReviveRequestListener:
@@ -41,6 +57,7 @@ class ReviveRequestListener:
         repo = self.repo
         bank_repo = self.bank_repo
         syncer = ReviveSync(self.services)
+        revive_operations = ReviveOperations(services.settings.database_path, services.gateway)
         notification_condition = threading.Condition()
 
         def row_value(row, field, default=None):
@@ -65,9 +82,12 @@ class ReviveRequestListener:
             request_id = muted(str(row_value(request, "request_id") or "?"))
             requester = highlight(row_value(request, "requester_name") or f"Requester {row_value(request, 'requester_id') or '?'}")
             kind = request_kind_label(request)
+            payment = revive_payment_text(
+                revive_operations.payment_context(str(row_value(request, "request_id"))), reviver,
+            )
             payout_template = (
                 f"Payout template: {requester}, your {kind.lower()} request for {target} was fulfilled by {reviver} "
-                f"at {revived_text}. Please send the agreed payout."
+                f"at {revived_text}. {payment}"
             )
             logger.success(
                 f"{info(f'{kind} request fulfilled')} [{source}] {target} by {reviver} at {success(revived_text)} ({request_id})"
@@ -243,6 +263,7 @@ class ReviveRequestListener:
 
                         if payload:
                             summary_bits = []
+                            payload = [add_revive_payment_details(revive_operations, item) for item in payload]
                             for notification in payload:
                                 event_type = str(notification.get("event_type") or "revive_request_fulfilled").lower()
                                 request_id = notification.get("request_id") or "?"

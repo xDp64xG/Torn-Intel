@@ -73,6 +73,7 @@ TORN_DISCORD_ENABLE_MESSAGE_CONTENT_INTENT=0
 TORN_DISCORD_BANKER_ROLE=Bankers
 TORN_DISCORD_REVIVE_CHANNEL_ID=
 TORN_DISCORD_REVIVE_POLL_SECONDS=20
+TORN_USER_API_KEY_ENCRYPTION_KEY=
 TORN_DISCORD_OC_DELAY_CHANNEL_ID=
 TORN_DISCORD_OC_DELAY_POLL_SECONDS=60
 TORN_DISCORD_ATTACKS_AUTOSYNC=1
@@ -82,6 +83,7 @@ TORN_DISCORD_ATTACKS_POLL_SECONDS=15
 Notes:
 - `TORN_DISCORD_ENABLE_MESSAGE_CONTENT_INTENT=0` (default) avoids privileged-intent errors and supports slash commands.
 - Set it to `1` only if you also enable **Message Content Intent** in the Discord Developer Portal and want `!ti` prefix commands.
+- To enable member key submission, generate a Fernet encryption key with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode('ascii'))"` in your project environment and store it as `TORN_USER_API_KEY_ENCRYPTION_KEY` in `.env`. Keep it private and stable across restarts; replacing it makes previously saved member keys unreadable. Members then use `/add` followed by `/ti_add_api_key`. Existing key submission also validates overdose-stat access, so custom keys need those existing permissions as well as user `revives` for chance estimates.
 
 Run:
 
@@ -101,6 +103,9 @@ Discord commands:
 - Slash: `/ti_report` for report-style commands with guided options + autocomplete (includes war_payout summary/top/full/csv/image controls).
 - Slash: `/ti_war_payout` guided payout command for ranked wars with optional summary/top/full views and CSV/PNG exports.
 - Slash: `/ti_revives` guided revives search command.
+- Slash: `/ti_revive_logs` privately view a configured faction's incoming, outgoing, or combined revive logs.
+- Slash: `/ti_revive_chance` privately get a rough target revive-chance estimate; defaults to your linked Torn account.
+- Slash: `/ti_revive_contract` privately start, end, list, report, or estimate faction revive contracts (Manage Channels permission required).
 - Slash: `/add` link your Discord user to your Torn player ID. Omit `user_id` to search configured faction rosters for one exact display-name match; supply `user_id` manually if no unique match is found.
 - Slash: `/ti_withdraw` request a vault withdrawal; faction is determined by the caller's `Saints` or `Spartan` role, and the request alerts that faction role plus `TORN_DISCORD_BANKER_ROLE`.
 - Slash: `/ti_bank_channel` configure a shared bank channel or a separate channel for a faction.
@@ -123,13 +128,20 @@ Output formatting:
 - This aligns with Discord colored text generator style workflows while keeping Discord-native presentation.
 - Revive request embeds include Torn profile links for target/requester.
 - When a revive request is fulfilled, the posted request embed is auto-updated to green and shows the reviver name.
-- The Discord bot periodically runs `sync revives --mode live` + `revive_requests reconcile` while active Discord revive requests exist (interval controlled by `TORN_DISCORD_REVIVE_POLL_SECONDS`).
+- The Discord bot continuously syncs each configured faction's v1 `faction/?selections=revives` logs, even without pending requests, and reconciles active Discord requests. The interval is controlled by `TORN_DISCORD_REVIVE_POLL_SECONDS`. Each faction needs its own key pool with faction API access; the initial background sync covers the previous 24 hours. CLI backfill remains available for older history.
+- Revive requests from Discord or the local listener include a chance snapshot. The estimate uses **the target's** encrypted key submitted through `/ti_add_api_key`, not the requester's key or a faction key. A limited-access key with the user `revives` selection is required to read personal incoming revives. No saved key, insufficient permissions, invalid data, or incomplete pagination produces **Unavailable**, never a guessed percentage.
+- Estimates assume a **skill-100 reviver**, count successful received revives over the previous 24 hours, and use the existing community-model time-decaying penalty. They are not live Torn quotes and do not include current Early Discharge effects. An estimate of 50% or lower includes a warning. The timestamped snapshot persists when a request is fulfilled or cancelled; `/ti_revive_chance` fetches a fresh estimate.
+- The percentage in `/ti_revive_logs` is the recorded chance **at that historical attempt**, not a current chance estimate.
 - The Discord bot can also poll `sync crimes --mode live` and post OC delay start/resolve alerts for flying members when `TORN_DISCORD_OC_DELAY_CHANNEL_ID` or `/ti_oc_delay_channel` is configured.
 
 Bank withdrawal setup:
 - Set `FACTION_GTS_ROLE=Saints` and `FACTION_GTH_ROLE=Spartan` if the Discord role names differ from those defaults. Set `FACTION_GTH_NAME=Glory to Heroes` and configure the GTH ID/key pool.
 - Set `TORN_DISCORD_BANKER_ROLE` to the exact Discord role name that should be pinged on withdrawal requests (default: `Bankers`).
 - Each requester must run `/add user_id:<Torn player ID>` once. `/ti_withdraw amount:<amount>` will fail if the member has no faction role or has both faction roles.
+- The first **Fulfill** click records the banker and claims the request. That same button then becomes the prefilled faction-vault link; click **Fulfill** again to open Torn. There is no separate Open Vault button. Discord cannot open a URL and report the clicking user in a single button action.
+- A request has a 1-hour **pending-time** countdown, which pauses while a banker is processing it. If no payment is found within the 5-minute verification window, the same request returns to pending with its remaining countdown. The requester is notified that **no new request is needed**. Only a genuinely expired or cancelled request needs replacing.
+- Timed-out banker claims are retained across retries and restarts. Request embeds show the five most recent timed-out bankers, including after fulfillment; older claims remain in the database. Claims overwritten before this update cannot be recovered, but the current legacy claim is retained if it times out.
+- If faction payment logs cannot be read, the claim stays in process and the bot logs the verification failure instead of treating unavailable data as proof that no payment occurred. Update the bank userscript to **0.6.1** for clarified expiry notices and restart the bot/listener after updating the backend.
 - The local listener must be running for the Torn userscript. For same-LAN/mobile access, start it with `python main.py revive_listener serve --host 0.0.0.0 --port 8765`. For remote access, use a running tunnel and replace its temporary trycloudflare URL in `scripts/tampermonkey/revive_request_endpoint.json`; trycloudflare URLs expire when their tunnel stops.
 
 Reaction roles:
@@ -1008,6 +1020,49 @@ Matching behavior:
 - Matching prefers `target_id`; `target_name` is a fallback.
 - Fulfilled requests record `fulfilled_revive_id`, `revived_timestamp`, `fulfilled_at`, `fulfilled_by_id`, and `fulfilled_by_name`.
 - Near-duplicate external requests for the same target/source/timestamp window are deduplicated instead of creating multiple rows.
+
+#### Faction revive contracts
+
+Contracts are managed in Discord using `/ti_revive_contract`. All responses are private,
+and the caller must have Manage Channels, Manage Server, or Administrator permission.
+
+- `action:start`: provide `provider` (a configured faction tag), `target_faction_id`,
+  `start_at` (a past/current Unix timestamp), `amount` (successful-revive goal),
+  `success_price`, and `failure_price` (Torn dollars per attempt). Prices can be zero.
+- `action:current`: list active contracts and their IDs.
+- `action:report contract_id:<ID>`: show successes, failures, progress toward the goal,
+  unknown results, and total amount due.
+- `action:end contract_id:<ID>`: manually close the contract at the current timestamp.
+- `action:estimate contract_id:<ID> target_id:<Torn ID>`: use the target's submitted
+  key for the existing skill-100 rough estimate. The contract must be active and
+  the target must currently belong to its receiving faction. No usable target key
+  means **Unavailable**, not a faction-history-only percentage.
+
+Only one contract may cover a receiving faction at any instant, even across different
+providers. Start times are inclusive; end times are exclusive. The successful-revive
+goal is **not a billing cap and does not automatically close a contract**. All logged
+successes and failures by the contracted provider to the receiving faction during
+the window are counted, regardless of whether they had a bot request. Unknown results
+are shown but not billed. Reports are accounting estimates, not payment execution.
+
+Starting a contract rewinds that provider's sync cursor so older contract-window
+attempts are fetched. Allow background sync to finish before relying on the report;
+late-arriving logs still count inside a closed contract's window.
+
+Discord and userscript requests are automatically associated using the target's
+faction and the original request time. Association does not guarantee coverage:
+the completed revive's logged provider, receiving faction, and timestamp must match.
+Covered fulfillment embeds, requester DMs, and userscript notifications explicitly
+say **do not pay individually**. Unverified membership, ambiguous legacy contracts,
+or attempts outside requested contract terms require administrator review instead.
+Ordinary requests with no contract use the agreed regular revive fee.
+
+Userscript requester DMs require that requester's `/add` link; the target's Discord
+account is not used instead. Sent/blocked DM status persists across restarts, while
+transient Discord/network failures are logged and retried. Old fulfilled requests
+without captured request details do not trigger a historical DM blast on startup.
+Update the userscript to version 0.4.20 or newer for contract-aware payment notices,
+and restart both the bot and local listener after updating the backend.
 
 Commands:
 

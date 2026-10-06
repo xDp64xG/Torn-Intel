@@ -180,6 +180,9 @@ class TornGateway:
         """Read the live chain timer, not the historical chains selection."""
         return self._get_v1("faction", "chain", pool=pool)
 
+    def user_profile(self, user_id, pool="default"):
+        return self._get_v1("user", "profile", resource_id=int(user_id), pool=pool)
+
     def faction_basic(self, pool="default"):
 
         return self._get_v1(

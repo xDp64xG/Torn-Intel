@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS bank_requests (
     resolution_note TEXT,
     claimed_by TEXT,
     claimed_at INTEGER,
+    expires_at INTEGER,
     userscript_notified_at INTEGER
 )
 """
@@ -42,6 +43,7 @@ BANK_REQUEST_ADDED_COLUMNS = {
     "resolution_note": "TEXT",
     "claimed_by": "TEXT",
     "claimed_at": "INTEGER",
+    "expires_at": "INTEGER",
     "userscript_notified_at": "INTEGER",
 }
 
@@ -49,6 +51,23 @@ MAX_BANK_AMOUNT = 1_000_000_000_000
 BANK_REQUEST_TIMEOUT_SECONDS = 3600
 # How long after a banker clicks Fulfill we keep checking faction funds news for the payment.
 BANK_VERIFY_WINDOW_SECONDS = 300
+
+
+BANK_CLAIMS_DDL = """
+CREATE TABLE IF NOT EXISTS bank_request_claims (
+    claim_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id TEXT NOT NULL,
+    banker_name TEXT NOT NULL,
+    banker_discord_id TEXT,
+    claimed_at INTEGER NOT NULL,
+    ended_at INTEGER,
+    outcome TEXT NOT NULL DEFAULT 'in_process'
+)
+"""
+
+
+def bank_request_expiry(row):
+    return int(row.get("expires_at") or (int(row.get("created_at") or 0) + BANK_REQUEST_TIMEOUT_SECONDS))
 
 
 def bank_request_migrations(existing_columns):
@@ -65,6 +84,7 @@ class BankRequestRepository:
     def __init__(self, database):
         self.db = database
         self.db.create_table(BANK_REQUESTS_DDL)
+        self.db.create_table(BANK_CLAIMS_DDL)
         columns = {row["name"] for row in self.db.select("PRAGMA table_info(bank_requests)")}
         migrations = bank_request_migrations(columns)
         for statement in migrations:
@@ -101,6 +121,7 @@ class BankRequestRepository:
             "status": "pending",
             "raw_payload": json.dumps(payload)[:4000],
             "created_at": now,
+            "expires_at": now + BANK_REQUEST_TIMEOUT_SECONDS,
             "requested_text": str(payload.get("requested_text") or amount)[:32],
             "balance": int(payload["balance"]) if payload.get("balance") is not None else None,
         }

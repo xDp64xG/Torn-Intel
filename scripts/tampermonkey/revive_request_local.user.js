@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TornIntel Local Revive Request
 // @namespace    http://tampermonkey.net/
-// @version      0.4.19
+// @version      0.4.20
 // @description  Send local revive requests into TornIntel over a local HTTP listener.
 // @author       TornIntel
 // @match        https://www.torn.com/*
@@ -598,11 +598,11 @@
         return Boolean(target_id || target_name || document.querySelector('.profile-container'));
     };
 
-    const buildPayoutTemplate = (requesterName, targetName, reviverName, revivedAt) => {
+    const buildPayoutTemplate = (requesterName, targetName, reviverName, revivedAt, paymentInstruction) => {
         return [
             'Payout template:',
             `${requesterName}, your revive request for ${targetName} was fulfilled by ${reviverName} at ${revivedAt}.`,
-            'Please send the agreed payout when you can.'
+            paymentInstruction || 'Check the request payment terms before paying individually.'
         ].join('\n');
     };
 
@@ -626,7 +626,7 @@
         const revivedAt = item.revived_timestamp
             ? new Date(item.revived_timestamp * 1000).toLocaleString()
             : 'unknown time';
-        const payoutTemplate = buildPayoutTemplate(requester, target, reviver, revivedAt);
+        const payoutTemplate = buildPayoutTemplate(requester, target, reviver, revivedAt, item.payment_instruction);
 
         showNotice([
             `Revive fulfilled for ${target}`,

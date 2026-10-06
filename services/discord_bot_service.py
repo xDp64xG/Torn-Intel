@@ -23,6 +23,7 @@ import json
 import io
 import csv
 import math
+import logging
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -38,12 +39,16 @@ from modules.armoury.parser import ArmouryParser
 from repositories.bank_request_repository import (
     BANK_REQUEST_TIMEOUT_SECONDS,
     BANK_REQUESTS_DDL,
+    BANK_CLAIMS_DDL,
     BANK_VERIFY_WINDOW_SECONDS,
     MAX_BANK_AMOUNT,
     bank_request_migrations,
+    bank_request_expiry,
 )
 from services.bank_balance import BankBalanceError, find_vault_payment, resolve_withdrawal
 from services.faction_alerts import ArmouryStockTracker, OverdoseTracker, validate_user_api_key
+from services.revive_chance import ReviveChanceTracker
+from services.revive_operations import ReviveOperations
 from services.shoplifting_watcher import ShopliftingWatcher
 
 
@@ -343,6 +348,16 @@ class ReviveDiscordStore:
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS discord_revive_chance_estimates (
+                    request_id TEXT PRIMARY KEY,
+                    chance REAL,
+                    estimate_text TEXT NOT NULL,
+                    checked_at INTEGER NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS discord_user_api_keys (
                     discord_user_id TEXT PRIMARY KEY,
                     torn_user_id INTEGER NOT NULL,
@@ -555,6 +570,53 @@ class ReviveDiscordStore:
                 ),
             )
             conn.commit()
+        finally:
+            conn.close()
+
+    def get_user_api_key_for_torn_id(self, torn_user_id: int) -> str | None:
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                """
+                SELECT api_key_ciphertext FROM discord_user_api_keys
+                WHERE torn_user_id = ? ORDER BY updated_at DESC LIMIT 1
+                """,
+                (int(torn_user_id),),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            return None
+        try:
+            return self._key_cipher().decrypt(row["api_key_ciphertext"].encode("ascii")).decode("utf-8")
+        except (InvalidToken, UnicodeEncodeError, UnicodeDecodeError):
+            raise RuntimeError("The target's saved API key could not be decrypted; submit it again.") from None
+
+    def save_revive_chance_estimate(self, request_id, estimate):
+        conn = self._connect()
+        try:
+            conn.execute(
+                """
+                INSERT INTO discord_revive_chance_estimates VALUES (?, ?, ?, ?)
+                ON CONFLICT(request_id) DO UPDATE SET
+                    chance = excluded.chance,
+                    estimate_text = excluded.estimate_text,
+                    checked_at = excluded.checked_at
+                """,
+                (request_id, estimate.chance, estimate.text(), estimate.checked_at),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_revive_chance_estimate(self, request_id) -> str | None:
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT estimate_text FROM discord_revive_chance_estimates WHERE request_id = ?",
+                (request_id,),
+            ).fetchone()
+            return row["estimate_text"] if row else None
         finally:
             conn.close()
 
@@ -778,6 +840,7 @@ class ReviveDiscordStore:
 
     def _ensure_bank_table(self, conn):
         conn.execute(BANK_REQUESTS_DDL)
+        conn.execute(BANK_CLAIMS_DDL)
         columns = [str(column[1]) for column in conn.execute("PRAGMA table_info(bank_requests)").fetchall()]
         migrations = bank_request_migrations(columns)
         for statement in migrations:
@@ -925,6 +988,27 @@ class ReviveDiscordStore:
                 """,
                 (str(channel_id), str(message_id), str(request_id)),
             )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def attach_listener_message(self, request_id: str, channel_id: int, message_id: int):
+        conn = self._connect()
+        try:
+            conn.execute("""
+                INSERT INTO discord_revive_requests (
+                    request_id, discord_user_id, torn_user_id, target_id, target_name,
+                    channel_id, message_id, status, created_at
+                )
+                SELECT r.request_id, COALESCE((
+                    SELECT l.discord_user_id FROM discord_user_links l
+                    WHERE l.torn_user_id = r.requester_id
+                    ORDER BY l.updated_at DESC, l.discord_user_id LIMIT 1
+                ), ''), r.requester_id, r.target_id, r.target_name, ?, ?, 'active', r.created_at
+                FROM revive_requests r WHERE r.request_id = ?
+                ON CONFLICT(request_id) DO UPDATE SET
+                    channel_id = excluded.channel_id, message_id = excluded.message_id
+            """, (str(channel_id), str(message_id), request_id))
             conn.commit()
         finally:
             conn.close()
@@ -1202,17 +1286,31 @@ class ReviveDiscordStore:
 
     def resolve_bank_request(self, request_id: str, status: str, resolved_by: str, note: str | None = None):
         """Move an open (pending/in_process) request to a final status; False if already resolved."""
+        if status not in ("fulfilled", "cancelled", "expired"):
+            raise ValueError("Invalid bank request resolution status.")
         conn = self._connect()
         try:
             self._ensure_bank_table(conn)
+            now = int(time.time())
+            condition = "status IN ('pending', 'in_process')"
+            params = [str(status), now, str(resolved_by)[:100], (note or None) and str(note)[:500], str(request_id)]
+            if status == "expired":
+                condition = "status = 'pending' AND COALESCE(expires_at, created_at + ?) <= ?"
+                params.extend([BANK_REQUEST_TIMEOUT_SECONDS, now])
             cursor = conn.execute(
-                """
+                f"""
                 UPDATE bank_requests
                 SET status = ?, resolved_at = ?, resolved_by = ?, resolution_note = ?
-                WHERE request_id = ? AND status IN ('pending', 'in_process')
+                WHERE request_id = ? AND {condition}
                 """,
-                (str(status), int(time.time()), str(resolved_by)[:100], (note or None) and str(note)[:500], str(request_id)),
+                tuple(params),
             )
+            if cursor.rowcount:
+                conn.execute(
+                    "UPDATE bank_request_claims SET outcome = ?, ended_at = ? "
+                    "WHERE request_id = ? AND outcome = 'in_process'",
+                    (status, now, str(request_id)),
+                )
             conn.commit()
             return cursor.rowcount > 0
         finally:
@@ -1220,18 +1318,30 @@ class ReviveDiscordStore:
 
     #######################################################
 
-    def claim_bank_request(self, request_id: str, claimed_by: str):
+    def claim_bank_request(self, request_id: str, claimed_by: str, banker_discord_id: int | None = None):
         conn = self._connect()
         try:
             self._ensure_bank_table(conn)
+            now = int(time.time())
             cursor = conn.execute(
                 """
                 UPDATE bank_requests
-                SET status = 'in_process', claimed_by = ?, claimed_at = ?, resolution_note = NULL
+                SET status = 'in_process', claimed_by = ?, claimed_at = ?, resolution_note = NULL,
+                    expires_at = COALESCE(expires_at, created_at + ?)
                 WHERE request_id = ? AND status = 'pending'
+                    AND COALESCE(expires_at, created_at + ?) > ?
                 """,
-                (str(claimed_by)[:100], int(time.time()), str(request_id)),
+                (
+                    str(claimed_by)[:100], now, BANK_REQUEST_TIMEOUT_SECONDS, str(request_id),
+                    BANK_REQUEST_TIMEOUT_SECONDS, now,
+                ),
             )
+            if cursor.rowcount:
+                conn.execute(
+                    "INSERT INTO bank_request_claims (request_id, banker_name, banker_discord_id, claimed_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    (str(request_id), str(claimed_by)[:100], str(banker_discord_id) if banker_discord_id is not None else None, now),
+                )
             conn.commit()
             return cursor.rowcount > 0
         finally:
@@ -1239,21 +1349,55 @@ class ReviveDiscordStore:
 
     #######################################################
 
-    def release_bank_request(self, request_id: str, note: str):
+    def release_bank_request(self, request_id: str, note: str, expected_claimed_at: int | None = None):
         """Return an in-process request to pending (e.g. no payment found in the logs)."""
         conn = self._connect()
         try:
             self._ensure_bank_table(conn)
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM bank_requests WHERE request_id = ? AND status = 'in_process'",
+                (str(request_id),),
+            ).fetchone()
+            if row is None or (expected_claimed_at is not None and row["claimed_at"] != expected_claimed_at):
+                return False
+            now = int(time.time())
+            claimed_at = int(row["claimed_at"] or now)
+            expires_at = bank_request_expiry(dict(row)) + max(0, now - claimed_at)
+            # Preserve a pre-migration claim before clearing the current claim.
+            conn.execute("""
+                INSERT INTO bank_request_claims (request_id, banker_name, claimed_at)
+                SELECT ?, ?, ? WHERE NOT EXISTS (
+                    SELECT 1 FROM bank_request_claims WHERE request_id = ? AND outcome = 'in_process'
+                )
+            """, (str(request_id), str(row["claimed_by"] or "Unknown"), claimed_at, str(request_id)))
+            conn.execute(
+                "UPDATE bank_request_claims SET outcome = 'timed_out', ended_at = ? "
+                "WHERE request_id = ? AND outcome = 'in_process'",
+                (now, str(request_id)),
+            )
             cursor = conn.execute(
                 """
                 UPDATE bank_requests
-                SET status = 'pending', resolution_note = ?
+                SET status = 'pending', resolution_note = ?, expires_at = ?,
+                    claimed_by = NULL, claimed_at = NULL
                 WHERE request_id = ? AND status = 'in_process'
                 """,
-                (str(note)[:500], str(request_id)),
+                (str(note)[:500], expires_at, str(request_id)),
             )
             conn.commit()
             return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+    def bank_claim_history(self, request_id: str):
+        conn = self._connect()
+        try:
+            self._ensure_bank_table(conn)
+            return [dict(row) for row in conn.execute(
+                "SELECT * FROM bank_request_claims WHERE request_id = ? ORDER BY claim_id",
+                (str(request_id),),
+            )]
         finally:
             conn.close()
 
@@ -1299,11 +1443,14 @@ class ReviveDiscordStore:
                 """
                 SELECT *
                 FROM bank_requests
-                WHERE status = 'pending' AND created_at < ?
-                ORDER BY created_at ASC
+                WHERE status = 'pending' AND COALESCE(expires_at, created_at + ?) <= ?
+                ORDER BY COALESCE(expires_at, created_at + ?) ASC
                 LIMIT ?
                 """,
-                (int(older_than), int(limit)),
+                (
+                    BANK_REQUEST_TIMEOUT_SECONDS, int(older_than) + BANK_REQUEST_TIMEOUT_SECONDS,
+                    BANK_REQUEST_TIMEOUT_SECONDS, int(limit),
+                ),
             ).fetchall()
             return [dict(row) for row in rows]
         finally:
@@ -1823,6 +1970,10 @@ def serve_discord_bot(
     )
     armoury_stock_tracker = ArmouryStockTracker(gateway, revive_store)
     overdose_tracker = OverdoseTracker(gateway, revive_store, settings, logger)
+    revive_operations = ReviveOperations(settings.database_path, gateway)
+    revive_chance_tracker = ReviveChanceTracker(
+        revive_store, settings, logger or logging.getLogger(__name__),
+    )
 
     async def resolve_torn_id_from_display_name(user):
         if gateway is None:
@@ -1971,9 +2122,15 @@ def serve_discord_bot(
         )
 
     from services.discord_faction_watchers import DiscordFactionWatchers
+    from services.discord_revive_operations import DiscordReviveOperations
+    from services.revive_operations import revive_payment_text
 
     faction_watchers = DiscordFactionWatchers(
         bot, settings, gateway, revive_store, can_manage_alert_channels, logger,
+    )
+    revive_contracts = DiscordReviveOperations(
+        bot, settings, gateway, revive_store, can_manage_alert_channels, logger,
+        operations=revive_operations,
     )
 
     def shoplifting_setting_key(area: str, name: str):
@@ -2195,6 +2352,9 @@ def serve_discord_bot(
         revived_timestamp: int | None = None,
     ):
         kind = str(request_kind or "revive").strip().lower()
+        contract_details = revive_operations.request_details(request_id) or {}
+        if contract_details.get("contract_id"):
+            kind = "contract"
         kind_label = "Contract" if kind == "contract" else "Revive"
 
         if fulfilled:
@@ -2218,6 +2378,27 @@ def serve_discord_bot(
             requester_label = f"[{requester_label}]({requester_url})"
         embed.add_field(name="Requester", value=requester_label, inline=False)
         embed.add_field(name="Hospital", value=hospital_description or "-", inline=False)
+        chance_text = revive_store.get_revive_chance_estimate(request_id)
+        embed.add_field(
+            name="Revive Chance",
+            value=chance_text or "Unavailable: no estimate was captured for this request.",
+            inline=False,
+        )
+        if contract_details.get("contract_id"):
+            embed.add_field(
+                name="Contract",
+                value=(
+                    f"`{contract_details['contract_id']}` requested. "
+                    "Coverage depends on the logged provider and contract time window."
+                ),
+                inline=False,
+            )
+        elif contract_details.get("contract_check_status") == "unverified" or kind == "contract":
+            embed.add_field(
+                name="Contract",
+                value="Coverage is unverified; check with the contract administrator before paying individually.",
+                inline=False,
+            )
 
         if fulfilled:
             if reviver_name or reviver_id:
@@ -2227,8 +2408,8 @@ def serve_discord_bot(
                     reviver_text = f"[{reviver_text} [{int(reviver_id)}]]({reviver_url})"
                 embed.add_field(name="Reviver", value=reviver_text, inline=False)
                 embed.add_field(
-                    name="Pay Reviver",
-                    value=f"Please send revive payment to {reviver_text}.",
+                    name="Payment",
+                    value=revive_payment_text(revive_operations.payment_context(request_id), reviver_text),
                     inline=False,
                 )
             if revived_timestamp:
@@ -2747,6 +2928,22 @@ def serve_discord_bot(
 
         await interaction.followup.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
+    async def capture_revive_chance(request_id: str, target_id: int):
+        if revive_store.get_revive_chance_estimate(request_id) is None:
+            estimate = await asyncio.to_thread(revive_chance_tracker.estimate, target_id)
+            revive_store.save_revive_chance_estimate(request_id, estimate)
+
+    async def capture_request_contract(request_id: str, target_id: int, requested_timestamp: int):
+        try:
+            await asyncio.to_thread(
+                revive_operations.assign_request_contract, request_id, target_id, requested_timestamp,
+            )
+        except Exception as exc:
+            (logger or logging.getLogger(__name__)).warning(
+                f"Contract assignment unavailable for request {request_id}: {type(exc).__name__}: {exc}"
+            )
+            revive_operations.save_contract_assignment(request_id, None, "unverified")
+
     async def create_revive_request_flow(interaction: discord.Interaction, target_id: int | None = None):
         requester_discord_id = int(interaction.user.id)
         requester_name = str(getattr(interaction.user, "display_name", None) or interaction.user.name)
@@ -2795,6 +2992,8 @@ def serve_discord_bot(
             target_name=target_name,
             requester_name=requester_name,
         )
+        await capture_request_contract(request_id, resolved_target_id, int(time.time()))
+        await capture_revive_chance(request_id, resolved_target_id)
 
         revive_channel = await resolve_revive_channel(interaction)
         request_embed = build_revive_request_embed(
@@ -2830,29 +3029,39 @@ def serve_discord_bot(
                 now = time.time()
                 active_rows = revive_store.list_active_requests(limit=200)
 
-                # Mirror listener behavior: when pending revive requests exist,
-                # periodically sync revives and reconcile requests to detect fulfillment.
-                if active_rows and (now - last_reconcile_at) >= poll_seconds:
-                    sync_result = bridge.run_foreground(
-                        "sync revives --mode live",
-                        timeout_seconds=max(120, int(timeout_seconds or 180)),
-                    )
-                    if not sync_result.get("ok") and logger:
-                        logger.warning(
-                            f"Discord revive watcher sync failed (exit {sync_result.get('returncode')}): "
-                            f"{str(sync_result.get('output') or '').splitlines()[-1] if sync_result.get('output') else 'no output'}"
+                if (now - last_reconcile_at) >= poll_seconds:
+                    if gateway is not None:
+                        for faction in settings.list_factions():
+                            if not faction.faction_id or not faction.api_keys:
+                                continue
+                            try:
+                                await asyncio.to_thread(revive_operations.sync, faction)
+                            except Exception as exc:
+                                (logger or logging.getLogger(__name__)).warning(
+                                    f"[{faction.tag}] Revive-log sync failed: {type(exc).__name__}: {exc}"
+                                )
+                    elif active_rows:
+                        sync_result = await asyncio.to_thread(
+                            bridge.run_foreground,
+                            "sync revives --mode live",
+                            timeout_seconds=max(120, int(timeout_seconds or 180)),
                         )
-
-                    reconcile_result = bridge.run_foreground(
-                        "revive_requests reconcile --status pending --limit 200 --window-seconds 21600",
-                        timeout_seconds=max(120, int(timeout_seconds or 180)),
-                    )
-                    if not reconcile_result.get("ok") and logger:
-                        logger.warning(
-                            f"Discord revive watcher reconcile failed (exit {reconcile_result.get('returncode')}): "
-                            f"{str(reconcile_result.get('output') or '').splitlines()[-1] if reconcile_result.get('output') else 'no output'}"
+                        if not sync_result.get("ok"):
+                            (logger or logging.getLogger(__name__)).warning(
+                                f"Discord revive watcher sync failed (exit {sync_result.get('returncode')}): "
+                                f"{str(sync_result.get('output') or '').splitlines()[-1] if sync_result.get('output') else 'no output'}"
+                            )
+                    if active_rows:
+                        reconcile_result = await asyncio.to_thread(
+                            bridge.run_foreground,
+                            "revive_requests reconcile --status pending --limit 200 --window-seconds 21600",
+                            timeout_seconds=max(120, int(timeout_seconds or 180)),
                         )
-
+                        if not reconcile_result.get("ok"):
+                            (logger or logging.getLogger(__name__)).warning(
+                                f"Discord revive watcher reconcile failed (exit {reconcile_result.get('returncode')}): "
+                                f"{str(reconcile_result.get('output') or '').splitlines()[-1] if reconcile_result.get('output') else 'no output'}"
+                            )
                     last_reconcile_at = time.time()
 
                 rows = revive_store.list_fulfilled_pending_embed_updates(limit=50)
@@ -2939,6 +3148,10 @@ def serve_discord_bot(
                         target_name = str(row.get("target_name") or f"User {target_id or '?'}")
                         request_kind = str(row.get("request_kind") or "revive")
                         notes = str(row.get("notes") or "Requested via local revive listener")
+                        await capture_request_contract(
+                            request_id, target_id, int(row.get("created_at") or time.time()),
+                        )
+                        await capture_revive_chance(request_id, target_id)
 
                         embed = build_revive_request_embed(
                             request_id=request_id,
@@ -2951,6 +3164,7 @@ def serve_discord_bot(
                             cancelled=False,
                         )
                         message = await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+                        revive_store.attach_listener_message(request_id, int(channel.id), int(message.id))
                         revive_store.mark_notification_discord_posted(int(row["notification_id"]))
                         if logger:
                             logger.info(
@@ -3000,14 +3214,18 @@ def serve_discord_bot(
         note = str(row.get("resolution_note") or "").strip()
         if status == "pending":
             if created_at:
-                embed.add_field(name="Expires", value=f"<t:{created_at + BANK_REQUEST_TIMEOUT_SECONDS}:R>", inline=False)
+                embed.add_field(name="Expires", value=f"<t:{bank_request_expiry(row)}:R>", inline=False)
             if note:
                 embed.add_field(name="Note", value=note, inline=False)
         elif status == "in_process":
             claimed_at = int(row.get("claimed_at") or 0)
             claimed_text = f"{row.get('claimed_by') or 'Unknown'}" + (f" <t:{claimed_at}:R>" if claimed_at else "")
             embed.add_field(name="Claimed By", value=claimed_text, inline=False)
-            embed.add_field(name="Status", value="Checking faction logs for the payment...", inline=False)
+            embed.add_field(
+                name="Status",
+                value="Use Fulfill to open the vault. Checking faction logs for the payment; request expiry is paused.",
+                inline=False,
+            )
         elif status == "fulfilled":
             embed.add_field(name="Fulfilled By", value=str(row.get("resolved_by") or "Unknown"), inline=False)
             if note:
@@ -3017,7 +3235,17 @@ def serve_discord_bot(
             if note:
                 embed.add_field(name="Reason", value=note, inline=False)
         elif status == "expired":
-            embed.add_field(name="Expired", value="Not fulfilled within 1 hour.", inline=False)
+            embed.add_field(name="Expired", value="The 1-hour pending countdown ended (paused while a banker was processing).", inline=False)
+        history = revive_store.bank_claim_history(str(row.get("request_id") or ""))
+        timed_out = [claim for claim in history if claim["outcome"] == "timed_out"]
+        if timed_out:
+            lines = [
+                f"{discord.utils.escape_markdown(claim['banker_name'])} - timed out <t:{claim['ended_at']}:R>"
+                for claim in timed_out[-5:]
+            ]
+            if len(timed_out) > 5:
+                lines.insert(0, f"{len(timed_out) - 5} earlier timed-out claims retained in history.")
+            embed.add_field(name="Previous Bankers", value="\n".join(lines)[:1024], inline=False)
         embed.set_footer(text=str(row.get("request_id") or ""))
         if created_at:
             embed.timestamp = datetime.fromtimestamp(created_at)
@@ -3036,7 +3264,7 @@ def serve_discord_bot(
         elif requester_id:
             view.add_item(discord.ui.Button(
                 style=discord.ButtonStyle.link,
-                label="Open Vault",
+                label="Fulfill",
                 url=bank_fill_url(requester_id, amount),
             ))
         view.add_item(discord.ui.Button(
@@ -3124,12 +3352,16 @@ def serve_discord_bot(
     async def expire_stale_bank_requests():
         cutoff = int(time.time()) - BANK_REQUEST_TIMEOUT_SECONDS
         for row in revive_store.list_stale_bank_requests(cutoff):
-            if revive_store.resolve_bank_request(row["request_id"], "expired", "timeout", note="Not fulfilled within 1 hour."):
+            if revive_store.resolve_bank_request(
+                row["request_id"], "expired", "timeout",
+                note="The 1-hour pending countdown ended; processing time was paused.",
+            ):
                 await refresh_bank_request_message(row["request_id"])
                 await dm_bank_requester(
                     row,
                     "Withdrawal Request Expired",
-                    f"Your withdrawal request for ${int(row['amount']):,} expired: it wasn't fulfilled within 1 hour. "
+                    f"Your withdrawal request for ${int(row['amount']):,} expired: its 1-hour pending countdown ended "
+                    "(the countdown was paused while a banker was processing it). "
                     "Submit a new request if you still need the money.",
                     0x7f8c8d,
                 )
@@ -3153,6 +3385,14 @@ def serve_discord_bot(
         for row in rows:
             request_id = row["request_id"]
             response = news_by_faction.get(str(row.get("faction_tag") or "").upper())
+            if (
+                not isinstance(response, dict) or response.get("error")
+                or not (isinstance(response.get("fundsnews"), dict) or isinstance(response.get("news"), list))
+            ):
+                (logger or logging.getLogger(__name__)).warning(
+                    f"Payment verification unavailable for bank request {request_id}; keeping its banker claim active."
+                )
+                continue
             payment = find_vault_payment(
                 response,
                 int(row.get("requester_id") or 0),
@@ -3180,8 +3420,20 @@ def serve_discord_bot(
                     f"{row.get('claimed_by') or 'A banker'} clicked Fulfill, but no matching transaction "
                     f"appeared in the faction logs within {BANK_VERIFY_WINDOW_SECONDS // 60} minutes."
                 )
-                if revive_store.release_bank_request(request_id, note):
+                if revive_store.release_bank_request(
+                    request_id, note, expected_claimed_at=row.get("claimed_at"),
+                ):
                     await refresh_bank_request_message(request_id)
+                    resumed = revive_store.get_bank_request(request_id)
+                    await dm_bank_requester(
+                        resumed,
+                        "Withdrawal Still Pending",
+                        f"{row.get('claimed_by') or 'The banker'} timed out processing your withdrawal of "
+                        f"${int(row['amount']):,}. Your existing request is still active and its countdown "
+                        f"has resumed. It expires <t:{bank_request_expiry(resumed)}:R>. "
+                        "You do not need to submit another request.",
+                        0xf1c40f,
+                    )
                     if logger:
                         logger.info(f"Bank request {request_id} released: no transaction found")
 
@@ -3230,24 +3482,22 @@ def serve_discord_bot(
             await interaction.response.send_message("Only a banker can fulfill this request.", ephemeral=True)
             return
         actor = interaction.user.display_name
-        claimed = revive_store.claim_bank_request(request_id, actor)
+        claimed = revive_store.claim_bank_request(request_id, actor, banker_discord_id=interaction.user.id)
         row = revive_store.get_bank_request(request_id)
         embed, view = build_bank_request_message(row)
         await interaction.response.edit_message(embed=embed, view=view)
         if not claimed:
-            await interaction.followup.send(f"This request is already {row.get('status')}.", ephemeral=True)
+            text = (
+                "This request's pending countdown has ended; it can no longer be claimed."
+                if row.get("status") == "pending" else f"This request is already {row.get('status')}."
+            )
+            await interaction.followup.send(text, ephemeral=True)
             return
         if row.get("requester_id"):
-            link_view = discord.ui.View(timeout=None)
-            link_view.add_item(discord.ui.Button(
-                style=discord.ButtonStyle.link,
-                label="Open Vault",
-                url=bank_fill_url(row["requester_id"], row["amount"]),
-            ))
             await interaction.followup.send(
                 f"Send ${int(row['amount']):,} to {row.get('requester_name')}. "
+                "The same Fulfill button on the request is now the vault link. "
                 "The request will be marked fulfilled once the payment shows in the faction logs.",
-                view=link_view,
                 ephemeral=True,
             )
         await dm_bank_requester(
@@ -3327,7 +3577,8 @@ def serve_discord_bot(
                             row,
                             "Withdrawal Request Submitted",
                             f"Your request for ${int(row['amount']):,} was sent to the bankers. "
-                            f"It expires <t:{int(row['created_at']) + BANK_REQUEST_TIMEOUT_SECONDS}:R> if not fulfilled.",
+                            f"It expires <t:{bank_request_expiry(row)}:R> while pending; "
+                            "the countdown pauses while a banker is processing it.",
                             0xf1c40f,
                         )
                     except Exception as exc:
@@ -3723,6 +3974,7 @@ def serve_discord_bot(
                 logger.info("Started shoplifting alert watcher task")
 
         faction_watchers.start()
+        revive_contracts.start(monitor_logs=False)
 
         if getattr(settings, "discord_attacks_autosync", True) and (attacks_sync_task is None or attacks_sync_task.done()):
             attacks_sync_task = asyncio.create_task(attacks_sync_watcher())
@@ -3978,7 +4230,7 @@ def serve_discord_bot(
                 ephemeral=True,
             )
 
-    @bot.tree.command(name="ti_add_api_key", description="Securely add your Torn API key for overdose tracking")
+    @bot.tree.command(name="ti_add_api_key", description="Securely add your Torn API key for OD tracking and revive estimates")
     @app_commands.describe(faction="Faction to associate with your linked Torn account")
     @app_commands.choices(faction=[
         app_commands.Choice(name=f"{item.tag} - {item.name}"[:100], value=item.tag)
@@ -5555,6 +5807,27 @@ def serve_discord_bot(
             await interaction.followup.send(**kwargs)
 
         await run_and_respond(send_followup, command_text=command_text, background=background, timeout_override=timeout_seconds)
+
+    @bot.tree.command(name="ti_revive_chance", description="Privately estimate a target's revive chance using their saved key")
+    @app_commands.describe(target_id="Target Torn ID (defaults to your linked account)")
+    async def ti_revive_chance_slash(interaction: discord.Interaction, target_id: int | None = None):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        resolved_target_id = target_id if target_id is not None else revive_store.get_user_torn_id(interaction.user.id)
+        if resolved_target_id is None:
+            await interaction.followup.send(
+                "Link your Torn account with `/add` or provide a target Torn ID.",
+                ephemeral=True,
+            )
+            return
+        try:
+            estimate = await asyncio.to_thread(revive_chance_tracker.estimate, resolved_target_id)
+        except ValueError as exc:
+            await interaction.followup.send(str(exc), ephemeral=True)
+            return
+        await interaction.followup.send(
+            f"Revive chance for Torn user {resolved_target_id}:\n{estimate.text()}",
+            ephemeral=True, allowed_mentions=discord.AllowedMentions.none(),
+        )
 
     @bot.tree.command(name="ti_revives", description="Guided revives search from local DB")
     @app_commands.describe(
