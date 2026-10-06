@@ -30,6 +30,10 @@ TORN_SHOPLIFTING_MENTION=<@&123456789012345678>
 
 Multiple keys are recommended. The system automatically rotates through them and backs off when one hits a rate limit. The faction ID is used to filter leaderboards to your members only — find it in the Torn URL on your faction page.
 
+API requests use `comment=Torn Intel` so Torn's API-key usage log identifies the bot.
+The space is URL-encoded automatically. `TORN_COMMENT` can supply a custom audit
+label; the old `TornAPI` and `TornIntel` labels are upgraded to `Torn Intel`.
+
 ### 3. Run your first sync
 
 ```bash
@@ -106,6 +110,8 @@ Discord commands:
 - Slash: `/ti_revive_channel` set or view the active revive channel.
 - Slash: `/ti_oc_delay_channel` set or view the OC delay alert channel.
 - Slash: `/ti_shoplifting` start, update, stop, test, explain, or view shoplifting alerts per area, with per-area trigger and security filters.
+- Slash: `/ti_retal` enable or disable per-faction retal tracking, choose all/ranked-war attacks, and set its alert channel.
+- Slash: `/ti_chain_saver` enable or disable per-faction chain warnings, configure timer thresholds, and select a role to mention.
 - Slash: `/ti_reaction_role` post a message that grants roles when members react, with multiple emoji → role bindings per message.
 - Prefix: `!ti <command>` to run any CLI command string.
 - Long-running jobs: `!ti_bg`, `!ti_jobs`, `!ti_stop`, `!ti_output` (slash equivalents included).
@@ -303,6 +309,81 @@ python main.py shoplifting stop
 # Check whether it is enabled.
 python main.py shoplifting status
 ```
+
+---
+
+### Retal watcher (`/ti_retal`)
+
+Requires the Discord bot, a Torn faction ID and a faction API-key pool
+(`FACTION_GTS_KEYS`, `FACTION_GTH_KEYS`, etc.). Retals and chain saving start
+**off**. Their settings and notification state are stored in the existing SQLite
+database and survive restarts. Manage Channels permission is required to use
+their commands; the bot needs View Channel, Send Messages and Embed Links.
+
+```
+/ti_retal faction:GTS action:on channel:#retals mode:all
+/ti_retal faction:GTH action:on channel:#gth-retals mode:war
+/ti_retal faction:GTS action:configure mode:war
+/ti_retal faction:GTS action:status
+/ti_retal faction:GTS action:off
+```
+
+- Polls the selected faction's `attacks` selection every 30 seconds using that
+  faction's rotating API pool. It walks additional pages when necessary.
+- `all` watches identifiable incoming attacks on faction members; `war` only
+  creates alerts for incoming attacks flagged as ranked-war attacks.
+- Skips stealthed attacks, unnamed/unknown attackers, and attacks from the
+  watched faction itself. Enabling starts watching new attacks, not old history.
+- Posts the enemy's profile link, faction, defender, attack result and a deadline
+  five minutes after the incoming attack ended. The original Discord message is
+  edited through **Pending**, **Fulfilled**, or **Missed**.
+- A qualifying retal must be a winning outgoing attack by a member of the
+  **watched faction**, against the original enemy, started after the incoming
+  attack ended and completed within its five-minute window.
+- Matching uses **`modifiers.retaliation == 1`**, as configured for this feature.
+  This is a literal equality check, not a bonus check: values such as `1.5` do
+  **not** qualify. One matching hit fulfills every eligible pending alert for
+  that enemy. Ranked-war mode filters the incoming attack, not the matching hit.
+- Repeated API results do not create duplicate alerts. Failed Discord delivery
+  is retried; deleted messages are reposted. Late API data can correct a missed
+  alert when it proves the retal happened within the deadline.
+- `configure` changes settings without turning the watcher on. `off` stops
+  polling and message updates but keeps settings and existing records. When
+  re-enabled, existing pending records are reconciled as well as new attacks.
+
+### Chain saving (`/ti_chain_saver`)
+
+Uses the live `chain` selection, separately from historical chain reports. Each
+faction has independent enablement, channel, role, minimum size, timer thresholds
+and warning stages.
+
+```
+/ti_chain_saver faction:GTS action:on channel:#chain-saving role:@Chain-Savers
+/ti_chain_saver faction:GTH action:on channel:#gth-chain-saving role:@Spartans minimum:25
+/ti_chain_saver faction:GTS action:configure minimum:50 warning:100 urgent:45 final:20
+/ti_chain_saver faction:GTS action:configure clear_role:true
+/ti_chain_saver faction:GTS action:status
+/ti_chain_saver faction:GTS action:off
+```
+
+- Defaults: minimum **10 hits**, warnings strictly below **120**, **60**, and
+  **30 seconds**. Customize with `minimum`, `warning`, `urgent` and `final`;
+  values must satisfy `minimum >= 1` and `0 < final < urgent < warning < 300`.
+- Normal checks are every **4 minutes**, but an active eligible timer schedules
+  an earlier check when necessary to catch the first warning.
+- After the first warning, checks are at most **60 seconds** apart; after the
+  urgent warning, at most **30 seconds** apart. The final stage checks every
+  **15 seconds** until the timer refreshes or expires. Custom thresholds can
+  shorten these intervals.
+- Each stage alerts once per timer countdown. A refreshed timer or a new chain
+  re-arms warnings and schedules around the next first-warning threshold.
+  Changing thresholds also resets the warning stages.
+- If the first observation is already urgent/final, sends the most urgent
+  applicable warning rather than several stale warnings together.
+- No warnings for expired chains, cooldowns or chains below the minimum.
+- Alerts only mention the selected role. The role must be mentionable, or the
+  bot must have Mention Everyone permission. `clear_role:true` removes the ping.
+- Failed delivery does not consume a warning stage, so the next check retries.
 
 ---
 

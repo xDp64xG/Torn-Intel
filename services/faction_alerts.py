@@ -34,7 +34,7 @@ def _torn_request_json(path: str, params: dict, base_url: str, timeout: int = 20
     return payload
 
 
-def fetch_user_od_count(api_key: str, user_id: int, base_url: str, comment: str = "TornIntel") -> int:
+def fetch_user_od_count(api_key: str, user_id: int, base_url: str, comment: str = "Torn Intel") -> int:
     params = {"cat": "drugs", "key": api_key, "comment": comment}
     payload = _torn_request_json(
         f"v2/user/{int(user_id)}/personalstats",
@@ -135,7 +135,7 @@ def validate_user_api_key(
     expected_user_id: int,
     expected_faction_id: int,
     base_url: str,
-    comment: str = "TornIntel",
+    comment: str = "Torn Intel",
 ) -> dict:
     """Confirm a key belongs to the linked user and can read the OD stat."""
     basic = _torn_request_json(
@@ -273,7 +273,7 @@ class OverdoseTracker:
                 member["api_key"],
                 int(member["torn_user_id"]),
                 self.settings.base_url,
-                getattr(self.settings, "comment", "TornIntel"),
+                getattr(self.settings, "comment", "Torn Intel"),
             )
             return int(member["torn_user_id"]), count
         except Exception as exc:

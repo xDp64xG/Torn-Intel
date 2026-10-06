@@ -176,6 +176,10 @@ class TornGateway:
             pool=pool,
         )
 
+    def faction_chain(self, pool="default"):
+        """Read the live chain timer, not the historical chains selection."""
+        return self._get_v1("faction", "chain", pool=pool)
+
     def faction_basic(self, pool="default"):
 
         return self._get_v1(

@@ -1970,6 +1970,12 @@ def serve_discord_bot(
             and (guild_permissions.administrator or guild_permissions.manage_guild or guild_permissions.manage_channels)
         )
 
+    from services.discord_faction_watchers import DiscordFactionWatchers
+
+    faction_watchers = DiscordFactionWatchers(
+        bot, settings, gateway, revive_store, can_manage_alert_channels, logger,
+    )
+
     def shoplifting_setting_key(area: str, name: str):
         # jewelry_store keeps the original key names so existing configuration keeps working.
         return f"shoplifting_{name}" if area == "jewelry_store" else f"shoplifting_{area}_{name}"
@@ -3716,6 +3722,8 @@ def serve_discord_bot(
             if logger:
                 logger.info("Started shoplifting alert watcher task")
 
+        faction_watchers.start()
+
         if getattr(settings, "discord_attacks_autosync", True) and (attacks_sync_task is None or attacks_sync_task.done()):
             attacks_sync_task = asyncio.create_task(attacks_sync_watcher())
             if logger:
@@ -3942,7 +3950,7 @@ def serve_discord_bot(
                     int(linked_torn_id),
                     int(faction.faction_id),
                     settings.base_url,
-                    getattr(settings, "comment", "TornIntel"),
+                    getattr(settings, "comment", "Torn Intel"),
                 )
                 revive_store.set_user_api_key(
                     discord_user_id=int(interaction.user.id),

@@ -82,7 +82,9 @@ class Settings:
             if v.strip().isdigit()
         ] or [10, 20, 30, 60]
 
-        self.comment = os.environ.get("TORN_COMMENT", "TornIntel")
+        self.comment = os.environ.get("TORN_COMMENT", "Torn Intel").strip() or "Torn Intel"
+        if self.comment in ("TornAPI", "TornIntel"):
+            self.comment = "Torn Intel"
 
         # Global and Shoplifting API key pools
         global_keys_env = os.environ.get("GLOBAL_API_KEYS", "") or os.environ.get("TORN_GLOBAL_API_KEYS", "")
