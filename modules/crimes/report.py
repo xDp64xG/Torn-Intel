@@ -603,15 +603,15 @@ class CrimeReport:
         resolved = self.queries.resolved_delay_events(limit=max(1, int(limit)), faction=faction)
 
         lines = []
-        lines.append(f"\n{header('========== OC FLYING DELAYS ==========')}")
+        lines.append(f"\n{header('============ OC DELAYS =============')}")
         if faction:
             lines.append(f"Faction: {highlight(str(faction).upper())}")
-        lines.append("Tracks overdue planning crimes still blocked by assigned members who are traveling/abroad")
+        lines.append("Tracks overdue planning crimes still blocked by assigned members who are traveling/abroad or in hospital")
         lines.append(f"Active delays: {warning(str(len(active)))}")
         lines.append(f"Recent resolved delays: {info(str(len(resolved)))}")
         lines.append(muted("--------------------------------------"))
 
-        lines.append(f"\n{warning('ACTIVE FLYING DELAYS')}")
+        lines.append(f"\n{warning('ACTIVE OC DELAYS')}")
         if active:
             for row in active:
                 started_at = int(row.get("started_at") or 0)
@@ -627,8 +627,8 @@ class CrimeReport:
                 lines.append(
                     f"- {highlight(crime_name)} [{crime_id}] | tier {difficulty} | status {status_text} | delayed {error(duration_text)} since {started_text}"
                 )
-                lines.append(f"  flyers: {flyers}")
-                lines.append(f"  travel: {muted(states)}")
+                lines.append(f"  blocking: {flyers}")
+                lines.append(f"  status: {muted(states)}")
         else:
             lines.append(muted("- none"))
 
@@ -646,7 +646,7 @@ class CrimeReport:
                 lines.append(
                     f"- {highlight(crime_name)} [{crime_id}] | tier {difficulty} | delay {success(duration_text)} | {resolution} | {self._fmt_ts(started_at)} -> {self._fmt_ts(resolved_at)}"
                 )
-                lines.append(f"  flyers: {flyers}")
+                lines.append(f"  blocking: {flyers}")
         else:
             lines.append(muted("- none tracked yet"))
 

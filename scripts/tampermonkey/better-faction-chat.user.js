@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Faction Chat – Torn.com (Desktop + Torn PDA)
 // @namespace    https://torn.com/
-// @version      1.6.7
+// @version      1.6.8
 // @description  Desktop and Torn PDA faction chat tools: status, group tags, officer groups, search, timestamps and touch-friendly controls
 // @author       sercann
 // @match        https://www.torn.com/*
@@ -19,7 +19,7 @@
 (function () {
     'use strict';
 
-    const BFC_VERSION = '1.6.7';
+    const BFC_VERSION = '1.6.8';
     const STORE_KEY   = 'bfc_settings_v2';
     const API_BASE    = 'https://api.torn.com';
     const PDA_KEY     = '###PDA-APIKEY###';
@@ -315,24 +315,57 @@
         };
     }
 
+    // Torn ships several chat DOM variants (legacy chat-box-*, modern virtualized
+    // list, and the newer chat update). Selectors are tried in priority order.
+    const MSG_LIST_SELECTORS = [
+        '[class*="scrollWrapper__"]',
+        '[class*="chat-box-body___"]',
+        '[class*="chatBoxBody___"]',
+        '[class*="list___"]',
+    ];
+    const MSG_ITEM_SELECTORS = [
+        '[class*="box__"]',
+        '[class*="chat-box-message___"], [class*="chatBoxMessage___"]',
+        '[class*="virtualItem__"]',
+    ];
+    const NAME_SELECTORS = [
+        '[class*="senderContainer__"]',
+        '[class*="chat-box-message__sender___"]',
+        '[class*="sender_"]',
+        'a[href*="profiles.php"]',
+    ];
+    const BODY_SELECTORS = [
+        '[class*="body__"]',
+        '[class*="chat-box-message__message___"]',
+        '[class*="message__"]',
+        '[class*="content__"]',
+    ];
+    const NON_MESSAGE_CLASS_RX = /chat-box__|chat-box-wrapper|group-chat-box|chatBoxWrapper/i;
+
+    function firstMatch(root, selectors) {
+        for (const sel of selectors) {
+            const el = root.querySelector(sel);
+            if (el) return el;
+        }
+        return null;
+    }
     function findMsgList(root) {
-        return root.querySelector('[class*="scrollWrapper__"]') || root;
+        return firstMatch(root, MSG_LIST_SELECTORS) || root;
     }
     function findMsgItems(root) {
-        const boxes = root.querySelectorAll('[class*="box__"]');
-        if (boxes.length > 0) return Array.from(boxes);
-        const vItems = root.querySelectorAll('[class*="virtualItem__"]');
-        if (vItems.length > 0) return Array.from(vItems);
+        for (const sel of MSG_ITEM_SELECTORS) {
+            const items = Array.from(root.querySelectorAll(sel)).filter(el =>
+                !NON_MESSAGE_CLASS_RX.test(el.getAttribute('class') || '') &&
+                !el.closest('#bfc-toolbar, #bfc-search-bar, #bfc-notify-bar, #bfc-mention-popup'));
+            if (items.length > 0) return items;
+        }
         return [];
     }
     function findNameEl(msgEl) {
-        return msgEl.querySelector('[class*="senderContainer__"]')
-            || msgEl.querySelector('a[href*="profiles.php"]');
+        return firstMatch(msgEl, NAME_SELECTORS);
     }
     function findBodyEl(msgEl) {
-        return msgEl.querySelector('[class*="body__"]')
-            || msgEl.querySelector('[class*="message__"]')
-            || msgEl.querySelector('[class*="content__"]');
+        return firstMatch(msgEl, BODY_SELECTORS);
     }
 
     let memberCache = {}, nameIndex = {}, pollTimer = null;
@@ -461,7 +494,11 @@
         return null;
     }
 
+    let lastPollAt = 0;
+
     async function pollStatuses() {
+        if (document.hidden) return;
+        lastPollAt = Date.now();
         let entries = normalizeMembers(await apiFetch('/v2/faction/members'));
         if (!entries) entries = normalizeMembers(await apiFetch('/faction/?selections=members'));
         if (!entries || !entries.length) { updatePill('API Error', true); return; }
@@ -520,7 +557,7 @@
         if (msgEl.dataset.bfcInd) return;
         msgEl.dataset.bfcInd = '1';
 
-        const senderContainer = msgEl.querySelector('[class*="senderContainer__"]');
+        const senderContainer = findNameEl(msgEl);
         if (!senderContainer) return;
 
         const id = nameIndex[lcName], info = id ? memberCache[id] : null;
@@ -893,6 +930,17 @@
         return sender + '|' + ts + '|' + body;
     }
 
+    function rememberMsgFp(fp) {
+        processedMsgFps.add(fp);
+        if (processedMsgFps.size <= 3000) return;
+        // Sets iterate in insertion order, so this drops the oldest fingerprints.
+        let excess = processedMsgFps.size - 2500;
+        for (const old of processedMsgFps) {
+            if (excess-- <= 0) break;
+            processedMsgFps.delete(old);
+        }
+    }
+
     let mentionStack = [], mentionIdx = 0, notifyBar = null;
 
     function buildNotifyBar(container) {
@@ -1211,6 +1259,13 @@
     }
 
     function getMsgTimestamp(msgEl) {
+        if (msgEl.dataset.bfcTime) return msgEl.dataset.bfcTime;
+        const label = readMsgTimestamp(msgEl);
+        msgEl.dataset.bfcTime = label;
+        return label;
+    }
+
+    function readMsgTimestamp(msgEl) {
         let foundTs = null, strTime = null;
         try {
             const elements = [msgEl, ...msgEl.querySelectorAll('*')];
@@ -1262,103 +1317,117 @@
     if (!killerStyle) {
         killerStyle = document.createElement('style');
         killerStyle.id = 'bfc-tooltip-killer';
-        document.head.appendChild(killerStyle);
+        (document.head || document.documentElement).appendChild(killerStyle);
     }
 
-    function processMsg(msgEl) {
-        if (msgEl.dataset.bfcDone) return;
-        msgEl.dataset.bfcDone = '1';
+    const killedTooltipIds = new Set();
 
-        if (!msgEl.classList.contains('bfc-msg-container')) {
-            msgEl.classList.add('bfc-msg-container');
-            injectCopy(msgEl);
-        }
+    function hideTornTooltip(el) {
+        const tId = el.getAttribute('aria-describedby');
+        if (!tId || killedTooltipIds.has(tId)) return;
+        killedTooltipIds.add(tId);
+        el.dataset.ttHidden = tId;
+        try {
+            killerStyle.sheet.insertRule(`[id="${CSS.escape(tId)}"] { display: none !important; opacity: 0 !important; visibility: hidden !important; pointer-events: none !important; }`, killerStyle.sheet.cssRules.length);
+        } catch(e) {}
+    }
 
-        const senderContainer = msgEl.querySelector('[class*="senderContainer__"]');
-        if (senderContainer) protectNode(senderContainer);
+    function isOwnMessage(msgEl, lcName) {
+        if (CFG.username && lcName === CFG.username.toLowerCase()) return true;
+        const box = msgEl.matches('[class*="box__"]') ? msgEl : msgEl.querySelector('[class*="box__"]');
+        const cls = box ? (box.getAttribute('class') || '') : '';
+        return cls.includes('local') || cls.includes('right');
+    }
 
-        const bodyEl = msgEl.querySelector('[class*="body__"]');
-        if (bodyEl) protectNode(bodyEl);
-
-        const nameEl = findNameEl(msgEl);
-        if (nameEl) {
-            const rawName = nameEl.textContent.trim().replace(/[:\s]+$/, '');
-            const lcName = rawName.toLowerCase();
-
-            const isSelf = (CFG.username && lcName === CFG.username.toLowerCase());
-            const box = msgEl.querySelector('[class*="box__"]');
-            const isLocalMessage = box && (box.className.includes('local') || box.className.includes('right'));
-
-            if (!isSelf && !isLocalMessage) {
-                injectIndicators(msgEl, lcName);
+    // Adds (or re-adds after a React re-render) the icons, timestamp and copy button.
+    function decorateMsg(msgEl) {
+        if (!msgEl.querySelector('.bfc-icons-wrapper')) {
+            const nameEl = findNameEl(msgEl);
+            if (nameEl) {
+                const lcName = nameEl.textContent.trim().replace(/[:\s]+$/, '').toLowerCase();
+                if (!isOwnMessage(msgEl, lcName)) {
+                    msgEl.dataset.bfcInd = '';
+                    injectIndicators(msgEl, lcName);
+                }
             }
         }
-
         if (CFG.showTimestamps) injectTs(msgEl);
+        injectCopy(msgEl);
+        if (msgEl.dataset.bfcMentioned === '1' && !msgEl.classList.contains('bfc-mentioned')) {
+            msgEl.classList.add('bfc-mentioned');
+        }
+    }
+
+    // Returns true the first time an element is processed.
+    function processMsg(msgEl) {
+        if (msgEl.dataset.bfcDone) {
+            decorateMsg(msgEl);
+            return false;
+        }
+        msgEl.dataset.bfcDone = '1';
+        msgEl.classList.add('bfc-msg-container');
+
+        const nameEl = findNameEl(msgEl);
+        if (nameEl) protectNode(nameEl);
+        const bodyEl = findBodyEl(msgEl);
+        if (bodyEl) protectNode(bodyEl);
+
+        decorateMsg(msgEl);
+        hideTornTooltip(msgEl);
 
         const fp = getMsgFingerprint(msgEl);
         const isNew = !processedMsgFps.has(fp);
-
-        if (isNew) {
-            processedMsgFps.add(fp);
-        }
+        if (isNew) rememberMsgFp(fp);
 
         checkMention(msgEl, fp, isNew);
 
         const bodyText = (bodyEl || msgEl).textContent.toLowerCase();
         processedMsgs.push({ el: msgEl, bodyText });
+        return true;
+    }
 
-        const tooltipObserver = new MutationObserver((mutations) => {
-            let domChanged = false;
+    function pruneProcessedMsgs() {
+        if (processedMsgs.length < 400) return;
+        const live = processedMsgs.filter(m => m.el.isConnected).slice(-400);
+        processedMsgs.length = 0;
+        processedMsgs.push(...live);
+    }
 
-            mutations.forEach(mut => {
-                if (mut.attributeName === 'aria-describedby') {
-                    const tId = msgEl.getAttribute('aria-describedby');
-                    if (tId && !msgEl.dataset.ttHidden) {
-                        msgEl.dataset.ttHidden = tId;
-                        try {
-                            killerStyle.sheet.insertRule(`[id="${tId}"] { display: none !important; opacity: 0 !important; visibility: hidden !important; pointer-events: none !important; }`, killerStyle.sheet.cssRules.length);
-                        } catch(e) {}
-                    }
-                }
-                if (mut.type === 'childList') {
-                    domChanged = true;
-                }
-            });
-
-            if (domChanged) {
-                if (!msgEl.querySelector('.bfc-icons-wrapper')) {
-                    const curNameEl = findNameEl(msgEl);
-                    if (curNameEl) {
-                        const rawName = curNameEl.textContent.trim().replace(/[:\s]+$/, '');
-                        const lcName = rawName.toLowerCase();
-
-                        const isSelf = (CFG.username && lcName === CFG.username.toLowerCase());
-                        const box = msgEl.querySelector('[class*="box__"]');
-                        const isLocalMessage = box && (box.className.includes('local') || box.className.includes('right'));
-
-                        if (!isSelf && !isLocalMessage) {
-                            msgEl.dataset.bfcInd = '';
-                            injectIndicators(msgEl, lcName);
-                        }
-                    }
-                }
-                if (CFG.showTimestamps && !msgEl.querySelector('.bfc-ts')) {
-                    injectTs(msgEl);
-                }
-                if (!msgEl.querySelector('.bfc-cp-btn')) {
-                    injectCopy(msgEl);
-                }
-                if (msgEl.dataset.bfcMentioned === '1' && !msgEl.classList.contains('bfc-mentioned')) {
-                    msgEl.classList.add('bfc-mentioned');
-                }
-            }
-        });
-        tooltipObserver.observe(msgEl, { childList: true, subtree: true, attributes: true, attributeFilter: ['aria-describedby'] });
-
-        if (autoScrollOn && msgListEl) {
-            requestAnimationFrame(() => { msgListEl.scrollTop = msgListEl.scrollHeight; });
+    function scanMessages() {
+        if (!msgListEl || !msgListEl.isConnected) return;
+        let added = false;
+        findMsgItems(msgListEl).forEach(el => { if (processMsg(el)) added = true; });
+        pruneProcessedMsgs();
+        if (added && autoScrollOn) {
+            const list = msgListEl;
+            requestAnimationFrame(() => { list.scrollTop = list.scrollHeight; });
         }
+    }
+
+    // One observer for the whole message list replaces the old per-message observers.
+    let msgObserver = null, observedListEl = null, msgScanQueued = false;
+
+    function queueMsgScan() {
+        if (msgScanQueued) return;
+        msgScanQueued = true;
+        requestAnimationFrame(() => { msgScanQueued = false; scanMessages(); });
+    }
+
+    function observeMsgList(listEl) {
+        if (listEl && listEl === observedListEl && msgObserver) return;
+        if (msgObserver) msgObserver.disconnect();
+        msgObserver = null;
+        observedListEl = listEl || null;
+        if (!listEl) return;
+        msgObserver = new MutationObserver(mutations => {
+            let childChanged = false;
+            for (const mut of mutations) {
+                if (mut.type === 'childList') childChanged = true;
+                else if (mut.target.classList && mut.target.classList.contains('bfc-msg-container')) hideTornTooltip(mut.target);
+            }
+            if (childChanged) queueMsgScan();
+        });
+        msgObserver.observe(listEl, { childList: true, subtree: true, attributes: true, attributeFilter: ['aria-describedby'] });
     }
 
     function injectTs(msgEl) {
@@ -1401,7 +1470,9 @@
     }
 
     function findTornSettingsPanel() {
-        const candidates = document.querySelectorAll('div');
+        const root = document.getElementById('chatRoot') || document.body;
+        if (!root || !root.textContent.includes('General Settings')) return null;
+        const candidates = root.querySelectorAll('div');
         let bestMatch = null;
         for (const el of candidates) {
             if (!el.offsetParent) continue;
@@ -1416,12 +1487,18 @@
         return bestMatch;
     }
 
+    let lastRestoreScanAt = 0;
+
     function tryInjectRestoreBtn() {
         if (!CFG.hideGearBtn) {
             const existing = document.getElementById('bfc-torn-restore-btn');
             if (existing) existing.remove();
             return;
         }
+        // Scanning Torn's settings panel is expensive, so do it at most every 2s.
+        const now = Date.now();
+        if (now - lastRestoreScanAt < 2000) return;
+        lastRestoreScanAt = now;
         const panel = findTornSettingsPanel();
         if (!panel) return;
         if (panel.querySelector('#bfc-torn-restore-btn')) return;
@@ -1513,7 +1590,7 @@
                 const txt = (node.textContent || '').toLowerCase();
                 const idClass = `${node.id || ''} ${node.className || ''}`.toLowerCase();
                 const looksChat = /chat|faction/.test(idClass) || /message|faction/.test(hint) || matchesFactionLabel(txt);
-                const hasMessages = node.querySelector('[class*="box__"], [class*="message__"], [class*="virtualItem__"], a[href*="profiles.php"]');
+                const hasMessages = node.querySelector('[class*="box__"], [class*="message__"], [class*="chat-box-message___"], [class*="virtualItem__"], a[href*="profiles.php"]');
                 if (looksChat && hasMessages) return node;
             }
             if (/message|chat|faction/.test(hint) || matchesFactionLabel(hint)) {
@@ -1523,23 +1600,32 @@
         return null;
     }
 
+    const SCAN_INTERVAL_MS = IS_TORN_PDA ? 1000 : 1500;
+    let lastAttachAt = 0, attachQueued = false;
+
     function attachToFactionChat() {
+        if (document.hidden) return;
+        lastAttachAt = Date.now();
         tryInjectRestoreBtn();
         const box = findFactionChatBox();
         if (!box) {
             setChatToolsVisible(chatBoxEl, false);
+            observeMsgList(null);
             chatBoxEl = null;
             msgListEl = null;
             const pill = document.getElementById('bfc-status-pill');
             if (pill) pill.textContent = 'Open faction chat';
             return;
         }
-        if (box !== chatBoxEl || !box.isConnected) {
+        if (box !== chatBoxEl) {
             chatBoxEl = box;
-            msgListEl = findMsgList(box);
+            msgListEl = null;
             processedMsgs.length = 0;
             buildMemberPopup();
             if (CFG.apiKey && !pollTimer) startPoll();
+        }
+        if (!msgListEl || !msgListEl.isConnected || !chatBoxEl.contains(msgListEl)) {
+            msgListEl = findMsgList(chatBoxEl);
         }
 
         buildNotifyBar(chatBoxEl);
@@ -1548,22 +1634,43 @@
         setupMentionAutocomplete(chatBoxEl);
         const chatOpen = isFactionChatOpen(chatBoxEl);
         setChatToolsVisible(chatBoxEl, chatOpen);
-        if (!chatOpen) return;
-        if (msgListEl) findMsgItems(msgListEl).forEach(processMsg);
+        if (!chatOpen) { observeMsgList(null); return; }
+        observeMsgList(msgListEl);
+        scanMessages();
+    }
+
+    function chatToolsAttached() {
+        return Boolean(chatBoxEl && chatBoxEl.isConnected && toolbar && toolbar.isConnected && chatBoxEl.contains(toolbar));
+    }
+
+    function queueAttach() {
+        if (attachQueued || document.hidden) return;
+        attachQueued = true;
+        const wait = Math.max(150, SCAN_INTERVAL_MS - (Date.now() - lastAttachAt));
+        setTimeout(() => { attachQueued = false; attachToFactionChat(); }, wait);
     }
 
     function runScanner() {
         if (chatScanner) clearInterval(chatScanner);
-        chatScanner = setInterval(attachToFactionChat, IS_TORN_PDA ? 500 : 800);
+        chatScanner = setInterval(() => { if (!document.hidden) attachToFactionChat(); }, SCAN_INTERVAL_MS);
         attachToFactionChat();
 
         if (!rootObserver) {
+            // Only used to notice the chat opening/re-rendering quickly. It never scans
+            // directly; it queues one throttled attach while the toolbar is missing.
+            let openCheckQueued = false;
             rootObserver = new MutationObserver(() => {
-                if (!chatBoxEl || !chatBoxEl.isConnected || !document.getElementById('bfc-toolbar')) {
-                    attachToFactionChat();
-                }
+                if (attachQueued) return;
+                if (!chatToolsAttached()) { queueAttach(); return; }
+                // Tools are mounted but hidden: cheaply check (throttled) whether the chat was just opened.
+                if (openCheckQueued || !toolbar.classList.contains('bfc-chat-hidden')) return;
+                openCheckQueued = true;
+                setTimeout(() => {
+                    openCheckQueued = false;
+                    if (chatBoxEl && chatBoxEl.isConnected && isFactionChatOpen(chatBoxEl)) attachToFactionChat();
+                }, 300);
             });
-            rootObserver.observe(document.documentElement, { childList:true, subtree:true });
+            rootObserver.observe(document.body || document.documentElement, { childList: true, subtree: true });
         }
     }
 
@@ -1806,9 +1913,13 @@
         buildSettingsPanel();
         runScanner();
 
-        document.addEventListener('visibilitychange', () => { if (!document.hidden) attachToFactionChat(); });
-        window.addEventListener('pageshow', attachToFactionChat);
-        window.addEventListener('focus', attachToFactionChat);
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) return;
+            attachToFactionChat();
+            if (CFG.apiKey && pollTimer && Date.now() - lastPollAt > CFG.refreshInterval * 1000) pollStatuses();
+        });
+        window.addEventListener('pageshow', queueAttach);
+        window.addEventListener('focus', queueAttach);
         window.addEventListener('orientationchange', () => setTimeout(attachToFactionChat, 250));
         window.addEventListener('resize', () => {
             const panel = document.getElementById('bfc-panel');

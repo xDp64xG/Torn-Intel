@@ -38,6 +38,14 @@ class FactionWatchRepository:
                     state_json TEXT NOT NULL
                 );
             """)
+            existing = {row[1] for row in conn.execute("PRAGMA table_info(discord_retal_alerts)")}
+            for column, kind in (
+                ("attacker_faction_id", "INTEGER"),
+                ("attack_code", "TEXT"),
+                ("fulfilled_by_id", "INTEGER"),
+            ):
+                if column not in existing:
+                    conn.execute(f"ALTER TABLE discord_retal_alerts ADD COLUMN {column} {kind}")
 
     @contextmanager
     def connect(self):
@@ -54,23 +62,26 @@ class FactionWatchRepository:
             conn.execute("""
                 INSERT OR IGNORE INTO discord_retal_alerts (
                     faction_tag, attack_id, attacker_id, attacker_name,
-                    attacker_faction, defender_name, result, attacked_at, expires_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    attacker_faction, defender_name, result, attacked_at, expires_at,
+                    attacker_faction_id, attack_code
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 tag, attack["id"], attack["attacker_id"], attack["attacker_name"],
                 attack["attacker_faction_name"], attack["defender_name"], attack["result"],
                 attack["ended"], attack["ended"] + 300,
+                attack.get("attacker_faction") or None, attack.get("code") or None,
             ))
 
     def fulfill(self, tag, attack):
         with self.connect() as conn:
             conn.execute("""
                 UPDATE discord_retal_alerts
-                SET status = 'fulfilled', fulfilled_by = ?, fulfilled_attack_id = ?
+                SET status = 'fulfilled', fulfilled_by = ?, fulfilled_by_id = ?, fulfilled_attack_id = ?
                 WHERE faction_tag = ? AND status IN ('pending', 'missed') AND attacker_id = ?
                     AND attacked_at <= ? AND expires_at >= ?
             """, (
-                attack["attacker_name"], attack["id"], tag, attack["defender_id"],
+                attack["attacker_name"], attack["attacker_id"] or None, attack["id"], tag,
+                attack["defender_id"],
                 attack["started"], attack["ended"],
             ))
 

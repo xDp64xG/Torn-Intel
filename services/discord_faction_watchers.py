@@ -108,13 +108,48 @@ class DiscordFactionWatchers:
             f"Retal deadline: <t:{row['expires_at']}:R>"
         )
         if row["fulfilled_by"]:
-            embed.add_field(
-                name="Fulfilled by",
-                value=discord.utils.escape_markdown(row["fulfilled_by"]),
-                inline=False,
-            )
+            fulfilled_by = discord.utils.escape_markdown(row["fulfilled_by"])
+            fulfilled_by_id = row.get("fulfilled_by_id")
+            if fulfilled_by_id:
+                fulfilled_by = (
+                    f"[{fulfilled_by} ({fulfilled_by_id})]"
+                    f"(https://www.torn.com/profiles.php?XID={fulfilled_by_id})"
+                )
+            embed.add_field(name="Retal bonus taken by", value=fulfilled_by, inline=False)
         embed.set_footer(text=f"Attack {row['attack_id']} | Five-minute retal window")
         return embed
+
+    @staticmethod
+    def retal_links(row):
+        """(label, url) pairs for the quick-action buttons on an open retal."""
+        attacker_id = int(row["attacker_id"])
+        links = [
+            ("Retal", f"https://www.torn.com/loader.php?sid=attack&user2ID={attacker_id}"),
+        ]
+        if row.get("attack_code"):
+            links.append(("Attack log", f"https://www.torn.com/loader.php?sid=attackLog&ID={row['attack_code']}"))
+        links.append(("Profile", f"https://www.torn.com/profiles.php?XID={attacker_id}"))
+        faction_id = int(row.get("attacker_faction_id") or 0)
+        if faction_id > 0:
+            links.append(("Faction", f"https://www.torn.com/factions.php?step=profile&ID={faction_id}"))
+        return links
+
+    def retal_view(self, row):
+        if row["status"] != "pending":
+            return None
+        view = discord.ui.View(timeout=None)
+        for label, url in self.retal_links(row):
+            view.add_item(discord.ui.Button(label=label, url=url, style=discord.ButtonStyle.link))
+        return view
+
+    def configured_role(self, kind, tag, guild):
+        role_id = self.get(kind, tag, "role_id")
+        if not role_id:
+            return None
+        role = guild.get_role(int(role_id)) if guild is not None else None
+        if role is None:
+            raise ValueError(f"Configured {kind} role {role_id} is missing from the alert server.")
+        return role
 
     async def poll_retals(self, faction):
         tag = faction.tag
@@ -136,6 +171,7 @@ class DiscordFactionWatchers:
                 channel_id = row["channel_id"] or int(self.get("retal", tag, "channel_id"))
                 channel = await self.channel(channel_id)
                 embed = self.retal_embed(tag, row)
+                view = self.retal_view(row)
                 message = None
                 if row["message_id"]:
                     try:
@@ -143,9 +179,24 @@ class DiscordFactionWatchers:
                     except discord.NotFound:
                         self.logger.warning(f"[{tag}] Retal message {row['message_id']} was deleted; reposting.")
                 if message is not None:
-                    await message.edit(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+                    await message.edit(embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none())
                 else:
-                    message = await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+                    role = None
+                    if row["status"] == "pending":
+                        try:
+                            role = self.configured_role("retal", tag, getattr(channel, "guild", None))
+                        except ValueError as exc:
+                            self.logger.warning(f"[{tag}] {exc} Posting the retal without a mention.")
+                    send_kwargs = {
+                        "content": role.mention if role else None,
+                        "embed": embed,
+                        "allowed_mentions": discord.AllowedMentions(
+                            everyone=False, users=False, roles=[role], replied_user=False,
+                        ) if role else discord.AllowedMentions.none(),
+                    }
+                    if view is not None:
+                        send_kwargs["view"] = view
+                    message = await channel.send(**send_kwargs)
                 self.repository.mark_posted(tag, row["attack_id"], channel.id, message.id, row["status"])
             except Exception as exc:
                 self.logger.warning(f"[{tag}] Retal delivery failed for {row['attack_id']}: {type(exc).__name__}: {exc}")
@@ -216,6 +267,8 @@ class DiscordFactionWatchers:
             action="Turn on/off, view status, or configure settings",
             channel="Channel for new retal alerts",
             mode="All incoming attacks or only ranked-war attacks",
+            role="Role to mention when a new retal is available",
+            clear_role="Remove the configured retal role mention",
         )
         async def ti_retal(
             interaction: discord.Interaction,
@@ -223,8 +276,13 @@ class DiscordFactionWatchers:
             action: str = "status",
             channel: discord.TextChannel | None = None,
             mode: str | None = None,
+            role: discord.Role | None = None,
+            clear_role: bool = False,
         ):
-            await self.configure(interaction, "retal", faction, action, channel, mode=mode)
+            await self.configure(
+                interaction, "retal", faction, action, channel,
+                mode=mode, role=role, clear_role=clear_role,
+            )
 
         @self.bot.tree.command(name="ti_chain_saver", description="Configure per-faction chain-saving warnings")
         @app_commands.default_permissions(manage_channels=True)
@@ -277,15 +335,15 @@ class DiscordFactionWatchers:
             enabled = self.get(kind, tag, "enabled") == "1"
             text = f"[{tag}] {kind}: {'on' if enabled else 'off'}\nChannel: "
             text += f"<#{channel_id}>" if channel_id else "not configured"
+            role_id = self.get(kind, tag, "role_id")
             if kind == "retal":
                 text += f"\nMode: {self.get(kind, tag, 'mode', 'all')}\nPoll: 30s; window: 5 minutes"
             else:
                 config = self.chain_config(tag)
-                role_id = self.get(kind, tag, "role_id")
                 text += (
                     f"\nMinimum: {config.minimum} hits\nWarnings: {config.warning}/{config.urgent}/{config.final}s"
-                    f"\nRole: {'<@&' + role_id + '>' if role_id else 'none'}"
                 )
+            text += f"\nRole: {'<@&' + role_id + '>' if role_id else 'none'}"
             await interaction.response.send_message(
                 text, ephemeral=True, allowed_mentions=discord.AllowedMentions.none(),
             )

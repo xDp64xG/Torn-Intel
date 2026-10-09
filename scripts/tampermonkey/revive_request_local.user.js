@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TornIntel Local Revive Request
 // @namespace    http://tampermonkey.net/
-// @version      0.4.20
+// @version      0.4.21
 // @description  Send local revive requests into TornIntel over a local HTTP listener.
 // @author       TornIntel
 // @match        https://www.torn.com/*
@@ -33,6 +33,10 @@
     const DISCOVERED_BASE_URL_AT_KEY = 'tornintel_revive_listener_base_url_discovered_at';
     const DISCOVERY_CACHE_MS = 5 * 60 * 1000;
     const NOTIFICATION_POLL_MS = 15000;
+    const NOTIFICATION_MAX_BACKOFF_MS = 5 * 60 * 1000;
+    const LOCAL_ENDPOINT_TTL_MS = 60 * 1000;
+    const FORCED_DISCOVERY_GAP_MS = 60 * 1000;
+    const DEBUG_KEY = 'tornintel_revive_debug';
     const NOTICE_DURATION_MS = 25000;
     const BUTTON_ID = 'tornintel-local-revive-btn';
     const ICON_ID = 'tornintel-local-revive-icon';
@@ -41,7 +45,7 @@
     const ICON_POS_KEY = 'tornintel_local_revive_icon_position_v2';
     const REQUEST_KIND_KEY = 'tornintel_local_revive_request_kind';
     const BUTTON_RECHECK_MS = 5000;
-    const MOUNT_DEBOUNCE_MS = 120;
+    const MOUNT_DEBOUNCE_MS = 250;
     const ICON_DRAG_THRESHOLD = 8;
     const DEBUG_DIAGNOSTIC_DELAY_MS = 8000;
 
@@ -53,6 +57,9 @@
 
     const state = {
         activeBaseUrl: null,
+        activeBaseUrlAt: 0,
+        lastForcedDiscoveryAt: 0,
+        iconResizeBound: false,
         discoveryPromise: null,
         notificationTimer: null,
         lastCandidates: [],
@@ -78,9 +85,21 @@
         '#tornintel-revive-icon-style'
     ];
 
+    let debugEnabled = null;
+    const isDebugEnabled = () => {
+        if (debugEnabled === null) {
+            try {
+                debugEnabled = window.localStorage.getItem(DEBUG_KEY) === '1';
+            } catch {
+                debugEnabled = false;
+            }
+        }
+        return debugEnabled;
+    };
+
+    // Console output is opt-in: localStorage.setItem('tornintel_revive_debug', '1')
     const debugLog = (message, popup = false) => {
-        const line = `[TornIntel][debug] ${message}`;
-        console.info(line);
+        if (isDebugEnabled()) console.info(`[TornIntel][debug] ${message}`);
         if (popup) {
             showNotice(`DEBUG\n${message}`, 'error', 30000);
         }
@@ -513,14 +532,20 @@
     };
 
     const resolveBaseUrl = async () => {
-        // Keep a validated remote/LAN endpoint sticky, but do not keep localhost sticky.
-        if (state.activeBaseUrl && !isLocalFallbackUrl(state.activeBaseUrl)) return state.activeBaseUrl;
+        // Keep a validated remote/LAN endpoint sticky; re-validate localhost after a short TTL
+        // so a newly published LAN/tunnel endpoint can still take over.
+        if (state.activeBaseUrl && (
+            !isLocalFallbackUrl(state.activeBaseUrl) ||
+            (Date.now() - state.activeBaseUrlAt) < LOCAL_ENDPOINT_TTL_MS
+        )) {
+            return state.activeBaseUrl;
+        }
 
         const override = getOverrideBaseUrl();
         const discovered = await fetchDiscoveredBaseUrls(false);
         const candidates = unique([override, ...discovered, ...DEFAULT_BASE_URLS].map(trimSlash));
         state.lastCandidates = candidates;
-        console.info('[TornIntel] Resolving revive listener endpoint', { override, discovered, candidates });
+        debugLog(`Resolving revive listener endpoint: ${candidates.join(', ')}`);
 
         for (const baseUrl of candidates) {
             if (!isHttpUrl(baseUrl)) continue;
@@ -528,6 +553,7 @@
                 const res = await gmRequest('GET', endpoint(baseUrl, '/health'));
                 if (res && res.ok) {
                     state.activeBaseUrl = baseUrl;
+                    state.activeBaseUrlAt = Date.now();
                     console.info('[TornIntel] Selected revive listener endpoint', { baseUrl, source: 'candidate' });
                     return baseUrl;
                 }
@@ -536,21 +562,23 @@
             }
         }
 
-        // Cached discovery may be stale after endpoint changes; force one network refresh.
+        // Cached discovery may be stale after endpoint changes; force a network refresh,
+        // but not more than once per minute.
+        if ((Date.now() - state.lastForcedDiscoveryAt) < FORCED_DISCOVERY_GAP_MS) {
+            throw new Error(`No reachable revive listener URL found. Tried: ${candidates.join(', ')}`);
+        }
+        state.lastForcedDiscoveryAt = Date.now();
         const refreshedDiscovered = await fetchDiscoveredBaseUrls(true);
         const refreshedCandidates = unique([override, ...refreshedDiscovered, ...DEFAULT_BASE_URLS].map(trimSlash));
         state.lastCandidates = refreshedCandidates;
-        console.info('[TornIntel] Retrying endpoint resolution after forced discovery refresh', {
-            override,
-            refreshedDiscovered,
-            refreshedCandidates
-        });
+        debugLog(`Retrying endpoint resolution after forced discovery refresh: ${refreshedCandidates.join(', ')}`);
         for (const baseUrl of refreshedCandidates) {
             if (!isHttpUrl(baseUrl)) continue;
             try {
                 const res = await gmRequest('GET', endpoint(baseUrl, '/health'));
                 if (res && res.ok) {
                     state.activeBaseUrl = baseUrl;
+                    state.activeBaseUrlAt = Date.now();
                     console.info('[TornIntel] Selected revive listener endpoint', { baseUrl, source: 'refreshed-candidate' });
                     return baseUrl;
                 }
@@ -979,16 +1007,21 @@
             await submitReviveRequest(icon);
         });
 
-        window.addEventListener('resize', () => {
-            const next = clampIconPosition(
-                Number.parseFloat(icon.style.left || '0') || 0,
-                Number.parseFloat(icon.style.top || '0') || 0,
-                icon.offsetWidth || 76,
-                icon.offsetHeight || 44
-            );
-            icon.style.left = `${next.x}px`;
-            icon.style.top = `${next.y}px`;
-        });
+        if (!state.iconResizeBound) {
+            state.iconResizeBound = true;
+            window.addEventListener('resize', () => {
+                const icon = document.getElementById(ICON_ID);
+                if (!icon) return;
+                const next = clampIconPosition(
+                    Number.parseFloat(icon.style.left || '0') || 0,
+                    Number.parseFloat(icon.style.top || '0') || 0,
+                    icon.offsetWidth || 76,
+                    icon.offsetHeight || 44
+                );
+                icon.style.left = `${next.x}px`;
+                icon.style.top = `${next.y}px`;
+            });
+        }
 
         state.lastError = null;
         ensureDebugBadge();
@@ -1104,8 +1137,12 @@
 
             if (!state.buttonObserverStarted) {
                 new MutationObserver((mutations) => {
+                    if (state.mountTimer) return;
+                    const sameUrl = state.lastUrl === window.location.href;
+                    if (sameUrl && hasVisibleControl()) return;
+                    // Off profile pages there is nothing to mount, so ignore Torn's constant DOM churn.
+                    if (sameUrl && !shouldMountControls()) return;
                     if (shouldIgnoreMutations(mutations)) return;
-                    if (state.lastUrl === window.location.href && hasVisibleControl()) return;
                     try {
                         queueMount('mutation');
                     } catch (err) {
@@ -1118,7 +1155,10 @@
             if (!state.buttonRecheckTimer) {
                 state.buttonRecheckTimer = window.setInterval(() => {
                     try {
-                        if (state.lastUrl !== window.location.href || !hasVisibleControl()) {
+                        if (document.hidden) return;
+                        if (state.lastUrl !== window.location.href) {
+                            queueMount('interval');
+                        } else if (!hasVisibleControl() && shouldMountControls()) {
                             queueMount('interval');
                         }
                     } catch (err) {
@@ -1144,42 +1184,64 @@
         if (state.notificationTimer) return;
 
         let pollInFlight = false;
+        let pausedWhileHidden = false;
+        let failures = 0;
 
         const schedulePoll = (delayMs = 0) => {
             if (state.notificationTimer) {
                 window.clearTimeout(state.notificationTimer);
             }
-            state.notificationTimer = window.setTimeout(poll, delayMs);
+            state.notificationTimer = window.setTimeout(poll, Math.max(0, delayMs));
         };
 
         const poll = async () => {
+            state.notificationTimer = null;
             if (pollInFlight) return;
-            pollInFlight = true;
-            const { requester_name, requester_id } = getCurrentUser();
-            if (!requester_id && !requester_name) {
-                pollInFlight = false;
-                schedulePoll(5000);
+            if (document.hidden) {
+                pausedWhileHidden = true;
                 return;
             }
 
+            const { requester_name, requester_id } = getCurrentUser();
+            if (!requester_id && !requester_name) {
+                schedulePoll(NOTIFICATION_POLL_MS);
+                return;
+            }
+
+            pollInFlight = true;
+            const startedAt = Date.now();
+            let nextDelay = NOTIFICATION_POLL_MS;
             try {
                 const baseUrl = await resolveBaseUrl();
                 const query = requester_id
                     ? `?requester_id=${encodeURIComponent(requester_id)}&limit=10&wait=25`
                     : `?requester_name=${encodeURIComponent(requester_name)}&limit=10&wait=25`;
                 const res = await gmRequest('GET', `${endpoint(baseUrl, '/revive-request/notifications')}${query}`, null, 30000);
-                if (!res || !res.ok || !Array.isArray(res.notifications)) return;
-
-                for (const item of res.notifications) {
-                    showNotificationNotice(item);
+                failures = 0;
+                if (res && res.ok && Array.isArray(res.notifications)) {
+                    for (const item of res.notifications) {
+                        showNotificationNotice(item);
+                    }
                 }
+                // Long-poll responses arrive after ~25s, so this is usually 0. If the listener
+                // answers instantly, still wait out the poll interval instead of hammering it.
+                nextDelay = NOTIFICATION_POLL_MS - (Date.now() - startedAt);
             } catch (_err) {
-                // Listener offline should not spam alerts during passive polling.
+                // Listener offline: back off quietly (30s, 60s, ... up to 5 min) and re-resolve next time.
+                failures += 1;
+                state.activeBaseUrl = null;
+                nextDelay = Math.min(NOTIFICATION_MAX_BACKOFF_MS, NOTIFICATION_POLL_MS * (2 ** Math.min(failures, 5)));
             } finally {
                 pollInFlight = false;
-                schedulePoll(0);
+                schedulePoll(nextDelay);
             }
         };
+
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden || !pausedWhileHidden) return;
+            pausedWhileHidden = false;
+            schedulePoll(1000);
+        });
 
         schedulePoll(0);
     };

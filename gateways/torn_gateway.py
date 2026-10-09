@@ -272,12 +272,23 @@ class TornGateway:
             pool=pool,
         )
 
-    def faction_crimes_v2(self, category="available,completed", offset=0, limit=100, pool="default"):
+    def faction_crimes_v2(
+        self,
+        category="available,completed",
+        offset=0,
+        limit=100,
+        pool="default",
+        filters=None,
+        from_ts=None,
+        to_ts=None,
+        sort=None,
+    ):
         """
         Get faction OC 2.0 crimes with slot/item requirement data.
 
         Args:
             category: Torn crimes category filter, e.g. "available,completed"
+            filters: timestamp field used by from/to/sort, e.g. "executed_at"
         """
 
         return self._get_v2(
@@ -287,7 +298,14 @@ class TornGateway:
             cat=category,
             offset=offset,
             limit=limit,
+            filters=filters,
+            sort=sort,
+            to=to_ts,
+            **{"from": from_ts},
         )
+
+    def faction_members_v2(self, pool="default"):
+        return self._get_v2("faction", "members", pool=pool, striptags="true")
 
     def faction_basic_crimes_members_v2(self, category="available,completed", offset=0, limit=100, pool="default"):
         """

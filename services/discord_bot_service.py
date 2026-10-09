@@ -2122,11 +2122,16 @@ def serve_discord_bot(
         )
 
     from services.discord_faction_watchers import DiscordFactionWatchers
+    from services.discord_oc_watchers import DiscordOcWatchers
     from services.discord_revive_operations import DiscordReviveOperations
     from services.revive_operations import revive_payment_text
 
     faction_watchers = DiscordFactionWatchers(
         bot, settings, gateway, revive_store, can_manage_alert_channels, logger,
+    )
+    oc_watchers = DiscordOcWatchers(
+        bot, settings, gateway, revive_store, can_manage_alert_channels, logger,
+        discord_user_for_torn_id=revive_store.get_discord_user_for_torn_id,
     )
     revive_contracts = DiscordReviveOperations(
         bot, settings, gateway, revive_store, can_manage_alert_channels, logger,
@@ -2441,14 +2446,14 @@ def serve_discord_bot(
             title = f"{prefix}OC Delay Resolved"
             color = 0x2ecc71 if resolution == "completed" else 0x3498db
             description = (
-                f"**{crime_name}** [{crime_id}] is no longer blocked by a flying member.\n"
+                f"**{crime_name}** [{crime_id}] is no longer blocked by a traveling or hospitalized member.\n"
                 f"Total delay: **{format_duration_brief(duration_seconds)}**"
             )
         else:
             title = f"{prefix}OC Delay Started"
             color = 0xe67e22
             description = (
-                f"**{crime_name}** [{crime_id}] is currently blocked by a flying member.\n"
+                f"**{crime_name}** [{crime_id}] is currently blocked by a member who is traveling or in hospital.\n"
                 f"Delay running since **{format_ts_short(started_at)}**"
             )
 
@@ -2456,8 +2461,8 @@ def serve_discord_bot(
         if faction_tag:
             embed.add_field(name="Faction", value=faction_tag, inline=True)
         embed.add_field(name="Tier", value=str(difficulty), inline=True)
-        embed.add_field(name="Flyers", value=flyers, inline=False)
-        embed.add_field(name="Travel State", value=travel_text, inline=False)
+        embed.add_field(name="Blocking members", value=flyers, inline=False)
+        embed.add_field(name="Status", value=travel_text, inline=False)
 
         if started_at:
             embed.add_field(name="Started", value=format_ts_short(started_at), inline=True)
@@ -3974,6 +3979,7 @@ def serve_discord_bot(
                 logger.info("Started shoplifting alert watcher task")
 
         faction_watchers.start()
+        oc_watchers.start()
         revive_contracts.start(monitor_logs=False)
 
         if getattr(settings, "discord_attacks_autosync", True) and (attacks_sync_task is None or attacks_sync_task.done()):

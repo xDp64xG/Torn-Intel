@@ -115,8 +115,9 @@ Discord commands:
 - Slash: `/ti_revive_channel` set or view the active revive channel.
 - Slash: `/ti_oc_delay_channel` set or view the OC delay alert channel.
 - Slash: `/ti_shoplifting` start, update, stop, test, explain, or view shoplifting alerts per area, with per-area trigger and security filters.
-- Slash: `/ti_retal` enable or disable per-faction retal tracking, choose all/ranked-war attacks, and set its alert channel.
+- Slash: `/ti_retal` enable or disable per-faction retal tracking, choose all/ranked-war attacks, set its alert channel and an optional role to mention.
 - Slash: `/ti_chain_saver` enable or disable per-faction chain warnings, configure timer thresholds, and select a role to mention.
+- Slash: `/ti_oc_alerts` per-faction OC payout reminders and daily pings for members who have not joined an OC in X days.
 - Slash: `/ti_reaction_role` post a message that grants roles when members react, with multiple emoji → role bindings per message.
 - Prefix: `!ti <command>` to run any CLI command string.
 - Long-running jobs: `!ti_bg`, `!ti_jobs`, `!ti_stop`, `!ti_output` (slash equivalents included).
@@ -336,6 +337,8 @@ their commands; the bot needs View Channel, Send Messages and Embed Links.
 /ti_retal faction:GTS action:on channel:#retals mode:all
 /ti_retal faction:GTH action:on channel:#gth-retals mode:war
 /ti_retal faction:GTS action:configure mode:war
+/ti_retal faction:GTS action:configure role:@Retals
+/ti_retal faction:GTS action:configure clear_role:true
 /ti_retal faction:GTS action:status
 /ti_retal faction:GTS action:off
 ```
@@ -349,19 +352,46 @@ their commands; the bot needs View Channel, Send Messages and Embed Links.
 - Posts the enemy's profile link, faction, defender, attack result and a deadline
   five minutes after the incoming attack ended. The original Discord message is
   edited through **Pending**, **Fulfilled**, or **Missed**.
+- While a retal is pending the alert has link buttons: **Retal** (attack the
+  enemy), **Attack log**, **Profile** and **Faction**. The buttons are removed
+  once the retal is fulfilled or missed. If a `role` is configured it is
+  mentioned when a new retal is posted.
 - A qualifying retal must be a winning outgoing attack by a member of the
   **watched faction**, against the original enemy, started after the incoming
   attack ended and completed within its five-minute window.
-- Matching uses **`modifiers.retaliation == 1`**, as configured for this feature.
-  This is a literal equality check, not a bonus check: values such as `1.5` do
-  **not** qualify. One matching hit fulfills every eligible pending alert for
-  that enemy. Ranked-war mode filters the incoming attack, not the matching hit.
+- Matching requires the retal bonus (**`modifiers.retaliation > 1`**, Torn
+  reports `1.5`); a plain hit on the enemy (`1.0`) does not count. The alert
+  credits the member who took the bonus. One matching hit fulfills every
+  eligible pending alert for that enemy. Ranked-war mode filters the incoming attack, not the matching hit.
 - Repeated API results do not create duplicate alerts. Failed Discord delivery
   is retried; deleted messages are reposted. Late API data can correct a missed
   alert when it proves the retal happened within the deadline.
 - `configure` changes settings without turning the watcher on. `off` stops
   polling and message updates but keeps settings and existing records. When
   re-enabled, existing pending records are reconciled as well as new attacks.
+
+### OC alerts (`/ti_oc_alerts`)
+
+Per-faction organized-crime alerts with two independent features, each with its
+own channel and settings. Both start **off** and poll every 15 minutes.
+
+```
+/ti_oc_alerts faction:GTS feature:Payout reminders action:on channel:#oc role:@Bankers hours:24
+/ti_oc_alerts faction:GTS feature:Payout reminders action:dismiss crime_id:123456
+/ti_oc_alerts faction:GTS feature:Members not in an OC action:on channel:#oc days:3 hour:18
+/ti_oc_alerts faction:GTS feature:Members not in an OC action:status
+```
+
+- **Payout reminders**: successful crimes with a cash reward that have not been
+  paid through Torn's payout system `hours` (default 24) after completion are
+  listed in a reminder, repeated every `hours` while unpaid (crimes older than
+  7 days are dropped). Crimes paid manually can be silenced with `dismiss`.
+- **Members not in an OC**: once a day at `hour` UTC (default 18) members who
+  have gone `days` (default 3) without being in an OC are listed. Members linked
+  with `/add` are mentioned; others are listed by name. Tracking is seeded from
+  the last 7+ days of completed crimes, so members with no history are counted
+  from that point (or from when they joined the faction).
+- OC delay alerts also cover members who are **in hospital**, not only traveling.
 
 ### Chain saving (`/ti_chain_saver`)
 

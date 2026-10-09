@@ -57,8 +57,17 @@ def normalize_attacks(payload):
             "ranked_war": bool(item.get("is_ranked_war", item.get("ranked_war", False))),
             "result": str(item.get("result") or ""),
             "retaliation": (item.get("modifiers") or {}).get("retaliation"),
+            "code": str(item.get("code") or ""),
         })
     return sorted(attacks, key=lambda attack: (attack["ended"], attack["id"]))
+
+
+def got_retal_bonus(attack):
+    """Torn reports the retaliation modifier as a multiplier: 1 means no bonus, 1.5 means a retal."""
+    try:
+        return float(attack.get("retaliation") or 0) > 1
+    except (TypeError, ValueError):
+        return False
 
 
 class RetalTracker:
@@ -105,7 +114,7 @@ class RetalTracker:
             if (
                 attack["attacker_faction"] == faction.faction_id
                 and attack["result"] in WINNING_RESULTS
-                and attack["retaliation"] == 1
+                and got_retal_bonus(attack)
             ):
                 self.repository.fulfill(faction.tag, attack)
         self.repository.expire(faction.tag, now)

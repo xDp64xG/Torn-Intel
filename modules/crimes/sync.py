@@ -86,7 +86,7 @@ class CrimeSync(BaseSync):
 
         self.logger.info(
             f"Crimes snapshot synced [{faction_tag}]: {len(members)} members, {len(slots)} active slots, {len(cpr_rows)} CPR rows, "
-            f"{delay_summary.get('active', 0)} active flying delays, "
+            f"{delay_summary.get('active', 0)} active OC delays (travel/hospital), "
             f"{delay_summary.get('started', 0)} started, {delay_summary.get('resolved', 0)} resolved"
         )
 

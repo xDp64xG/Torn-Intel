@@ -8,6 +8,7 @@ import time
 class CrimeSlotRepository:
 
     FLYING_STATES = {"traveling", "abroad"}
+    HOSPITAL_STATES = {"hospital"}
     ABROAD_COUNTRIES = (
         "mexico", "cayman", "canada", "hawaii", "united kingdom", "uk",
         "argentina", "switzerland", "japan", "china", "uae", "south africa"
@@ -474,7 +475,7 @@ class CrimeSlotRepository:
 
             user_id = int(slot.get("user_id") or 0)
             member = members_by_id.get(user_id)
-            if not self._member_is_flying(member):
+            if not self._member_blocks_crime(member):
                 continue
 
             f_id = slot.get("faction_id") or faction_id
@@ -775,6 +776,20 @@ class CrimeSlotRepository:
         if any(country in desc for country in self.ABROAD_COUNTRIES):
             return True
         return False
+
+    ##########################################################
+
+    def _member_is_hospitalized(self, member):
+        if not member:
+            return False
+        state = str(member.get("status_state") or "").strip().lower()
+        if state in self.HOSPITAL_STATES:
+            return True
+        desc = str(member.get("status_description") or "").strip().lower()
+        return "hospital" in desc
+
+    def _member_blocks_crime(self, member):
+        return self._member_is_flying(member) or self._member_is_hospitalized(member)
 
     ##########################################################
 
