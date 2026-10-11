@@ -124,7 +124,7 @@ class DiscordFactionWatchers:
         """(label, url) pairs for the quick-action buttons on an open retal."""
         attacker_id = int(row["attacker_id"])
         links = [
-            ("Retal", f"https://www.torn.com/loader.php?sid=attack&user2ID={attacker_id}"),
+            ("Retal", f"https://www.torn.com/page.php?sid=attack&user2ID={attacker_id}"),
         ]
         if row.get("attack_code"):
             links.append(("Attack log", f"https://www.torn.com/loader.php?sid=attackLog&ID={row['attack_code']}"))

@@ -112,6 +112,7 @@ Discord commands:
 - Slash: `/revive` and `/r` request a revive for a target Torn ID after hospital-status API validation.
 - Slash: `/ti_revive_active` list active revive requests.
 - Slash: `/ti_revive_cancel` cancel your pending revive request.
+- Slash: `/ti_revive_settings` view or configure request timeout, minimum chance, regular/contract ping roles, and per-provider default contract prices (Manage Channels permission required).
 - Slash: `/ti_revive_channel` set or view the active revive channel.
 - Slash: `/ti_oc_delay_channel` set or view the OC delay alert channel.
 - Slash: `/ti_shoplifting` start, update, stop, test, explain, or view shoplifting alerts per area, with per-area trigger and security filters.
@@ -129,6 +130,12 @@ Output formatting:
 - This aligns with Discord colored text generator style workflows while keeping Discord-native presentation.
 - Revive request embeds include Torn profile links for target/requester.
 - When a revive request is fulfilled, the posted request embed is auto-updated to green and shows the reviver name.
+- Posted revive requests have **Claim/Unclaim**, **Profile / Revive** (opens `profiles.php?XID=<target>`), and **Cancel** buttons. Claiming updates the embed with the claimer; the buttons are removed once the request is fulfilled, cancelled, or expired.
+- Cancel is allowed for the requester, the target/requester by linked Torn ID, or members with Manage Messages. Cancelled requests are kept with `status='cancelled'`.
+- Requests expire after `/ti_revive_settings timeout_minutes` (default 15, `0` disables expiry). Claiming restarts the timer, and a 120-second grace period allows late revive logs to fulfill the request first.
+- Only revives performed by members of the configured factions (`TORN_FACTIONS` IDs) fulfill a request; revives from outside factions are ignored.
+- Optional role pings are sent for regular and contract requests. Requests below the configured minimum chance are rejected; an unavailable estimate is accepted.
+- `/ti_revive_contract start` uses the provider's default success/failure prices from `/ti_revive_settings` when prices are omitted.
 - The Discord bot continuously syncs each configured faction's v1 `faction/?selections=revives` logs, even without pending requests, and reconciles active Discord requests. The interval is controlled by `TORN_DISCORD_REVIVE_POLL_SECONDS`. Each faction needs its own key pool with faction API access; the initial background sync covers the previous 24 hours. CLI backfill remains available for older history.
 - Revive requests from Discord or the local listener include a chance snapshot. The estimate uses **the target's** encrypted key submitted through `/ti_add_api_key`, not the requester's key or a faction key. A limited-access key with the user `revives` selection is required to read personal incoming revives. No saved key, insufficient permissions, invalid data, or incomplete pagination produces **Unavailable**, never a guessed percentage.
 - Estimates assume a **skill-100 reviver**, count successful received revives over the previous 24 hours, and use the existing community-model time-decaying penalty. They are not live Torn quotes and do not include current Early Discharge effects. An estimate of 50% or lower includes a warning. The timestamped snapshot persists when a request is fulfilled or cancelled; `/ti_revive_chance` fetches a fresh estimate.
@@ -1046,7 +1053,7 @@ Revives are stored separately from revive requests.
 - `revive_requests` stores externally-triggered revive requests so they can later be matched to a completed revive and marked fulfilled.
 
 Matching behavior:
-- Requests are matched to the most recent successful revive for the same target after the request timestamp and within the matching window.
+- Requests are matched to the earliest successful revive for the same target, performed by a configured faction member, after the request timestamp and within the matching window.
 - Matching prefers `target_id`; `target_name` is a fallback.
 - Fulfilled requests record `fulfilled_revive_id`, `revived_timestamp`, `fulfilled_at`, `fulfilled_by_id`, and `fulfilled_by_name`.
 - Near-duplicate external requests for the same target/source/timestamp window are deduplicated instead of creating multiple rows.

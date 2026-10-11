@@ -16,6 +16,7 @@ class Database:
     def __init__(self, settings, logger):
 
         self.logger = logger
+        self.settings = settings
 
         db_path = Path(settings.database_path)
 

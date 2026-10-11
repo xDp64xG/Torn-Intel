@@ -9,10 +9,26 @@ from repositories.base_repository import Repository
 from models.revive import ReviveRequest
 
 
+def configured_faction_ids(settings) -> list[int]:
+    """Faction IDs whose members may fulfill a revive request."""
+    if settings is None or not hasattr(settings, "list_factions"):
+        return []
+    try:
+        factions = settings.list_factions()
+    except Exception:
+        return []
+    return [int(f.faction_id) for f in factions if getattr(f, "faction_id", None)]
+
+
 class ReviveRequestRepository(Repository):
 
-    def __init__(self, database):
+    def __init__(self, database, provider_faction_ids=None):
         super().__init__(database, ReviveRequest)
+        if provider_faction_ids is None:
+            provider_faction_ids = configured_faction_ids(getattr(database, "settings", None))
+        self.provider_faction_ids = tuple(
+            sorted({int(fid) for fid in (provider_faction_ids or ()) if int(fid or 0) > 0})
+        )
         self._ensure_columns()
         self._ensure_notification_columns()
         self._backfill_revived_timestamps()
@@ -393,6 +409,9 @@ class ReviveRequestRepository(Repository):
         if str(getattr(revive, "result", "")).strip().lower() != "success":
             return None
 
+        if not self._is_provider_revive(revive):
+            return None
+
         matched = self._find_matching_request(revive, window_seconds=window_seconds)
         if not matched:
             return None
@@ -475,23 +494,44 @@ class ReviveRequestRepository(Repository):
 
     ##########################################################
 
+    def _is_provider_revive(self, revive):
+
+        if not self.provider_faction_ids:
+            return True
+        if isinstance(revive, dict):
+            faction_id = revive.get("reviver_faction_id")
+        else:
+            faction_id = getattr(revive, "reviver_faction_id", None)
+        try:
+            return int(faction_id or 0) in self.provider_faction_ids
+        except (TypeError, ValueError):
+            return False
+
+    def _provider_filter(self):
+
+        if not self.provider_faction_ids:
+            return "", ()
+        placeholders = ", ".join("?" for _ in self.provider_faction_ids)
+        return f" AND reviver_faction_id IN ({placeholders})", tuple(self.provider_faction_ids)
+
     def _find_matching_revive_for_request(self, request, window_seconds=21600):
 
         upper = int(request["requested_timestamp"] or 0) + int(window_seconds)
+        provider_sql, provider_params = self._provider_filter()
 
         if int(request["target_id"] or 0) > 0:
             rows = self.db.select(
-                """
+                f"""
                 SELECT *
                 FROM revives
                 WHERE LOWER(result) = 'success'
                   AND target_id = ?
                   AND timestamp >= ?
-                  AND timestamp <= ?
-                                ORDER BY timestamp DESC, revive_id DESC
+                  AND timestamp <= ?{provider_sql}
+                ORDER BY timestamp ASC, revive_id ASC
                 LIMIT 1
                 """,
-                (int(request["target_id"]), int(request["requested_timestamp"]), upper),
+                (int(request["target_id"]), int(request["requested_timestamp"]), upper, *provider_params),
             )
             if rows:
                 return rows[0]
@@ -499,17 +539,17 @@ class ReviveRequestRepository(Repository):
         target_name = str(request["target_name"] or "").strip()
         if target_name:
             rows = self.db.select(
-                """
+                f"""
                 SELECT *
                 FROM revives
                 WHERE LOWER(result) = 'success'
                   AND LOWER(target_name) = LOWER(?)
                   AND timestamp >= ?
-                  AND timestamp <= ?
-                                ORDER BY timestamp DESC, revive_id DESC
+                  AND timestamp <= ?{provider_sql}
+                ORDER BY timestamp ASC, revive_id ASC
                 LIMIT 1
                 """,
-                (target_name, int(request["requested_timestamp"]), upper),
+                (target_name, int(request["requested_timestamp"]), upper, *provider_params),
             )
             if rows:
                 return rows[0]

@@ -58,6 +58,10 @@ LONG_RUNNING_COMMANDS = {"watch", "revive_listener"}
 REVIVE_SOURCE = "discord-bot"
 BANK_CANCEL_PREFIX = "ti_bank_cancel:"
 BANK_FULFILL_PREFIX = "ti_bank_fulfill:"
+REVIVE_CLAIM_PREFIX = "ti_revive_claim:"
+REVIVE_UNCLAIM_PREFIX = "ti_revive_unclaim:"
+REVIVE_CANCEL_PREFIX = "ti_revive_cancel:"
+REVIVE_EXPIRY_GRACE_SECONDS = 120
 
 REPORT_TYPES_BY_MODULE = {
     "attacks": ["chain_hit", "chain_stats", "chain_leaderboard", "chain_player"],
@@ -477,6 +481,22 @@ class ReviveDiscordStore:
             if "faction_tag" not in delay_names:
                 conn.execute("ALTER TABLE crime_delay_notifications ADD COLUMN faction_tag TEXT")
                 conn.commit()
+
+            revive_columns = {
+                str(col[1]).lower()
+                for col in conn.execute("PRAGMA table_info(discord_revive_requests)").fetchall()
+            }
+            for column, column_type in (
+                ("claimed_by_discord_id", "TEXT"),
+                ("claimed_by_name", "TEXT"),
+                ("claimed_at", "INTEGER"),
+                ("cancelled_by", "TEXT"),
+                ("expired_at", "INTEGER"),
+                ("hospital_text", "TEXT"),
+            ):
+                if column not in revive_columns:
+                    conn.execute(f"ALTER TABLE discord_revive_requests ADD COLUMN {column} {column_type}")
+            conn.commit()
         finally:
             conn.close()
 
@@ -606,6 +626,17 @@ class ReviveDiscordStore:
                 (request_id, estimate.chance, estimate.text(), estimate.checked_at),
             )
             conn.commit()
+        finally:
+            conn.close()
+
+    def get_revive_chance_value(self, request_id) -> float | None:
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT chance FROM discord_revive_chance_estimates WHERE request_id = ?",
+                (request_id,),
+            ).fetchone()
+            return float(row["chance"]) if row and row["chance"] is not None else None
         finally:
             conn.close()
 
@@ -977,45 +1008,46 @@ class ReviveDiscordStore:
 
     #######################################################
 
-    def attach_message(self, request_id: str, channel_id: int, message_id: int):
+    def attach_message(self, request_id: str, channel_id: int, message_id: int, hospital_text: str | None = None):
         conn = self._connect()
         try:
             conn.execute(
                 """
                 UPDATE discord_revive_requests
-                SET channel_id = ?, message_id = ?
+                SET channel_id = ?, message_id = ?, hospital_text = COALESCE(?, hospital_text)
                 WHERE request_id = ?
                 """,
-                (str(channel_id), str(message_id), str(request_id)),
+                (str(channel_id), str(message_id), hospital_text, str(request_id)),
             )
             conn.commit()
         finally:
             conn.close()
 
-    def attach_listener_message(self, request_id: str, channel_id: int, message_id: int):
+    def attach_listener_message(self, request_id: str, channel_id: int, message_id: int, hospital_text: str | None = None):
         conn = self._connect()
         try:
             conn.execute("""
                 INSERT INTO discord_revive_requests (
                     request_id, discord_user_id, torn_user_id, target_id, target_name,
-                    channel_id, message_id, status, created_at
+                    channel_id, message_id, status, created_at, hospital_text
                 )
                 SELECT r.request_id, COALESCE((
                     SELECT l.discord_user_id FROM discord_user_links l
                     WHERE l.torn_user_id = r.requester_id
                     ORDER BY l.updated_at DESC, l.discord_user_id LIMIT 1
-                ), ''), r.requester_id, r.target_id, r.target_name, ?, ?, 'active', r.created_at
+                ), ''), r.requester_id, r.target_id, r.target_name, ?, ?, 'active', r.created_at, ?
                 FROM revive_requests r WHERE r.request_id = ?
                 ON CONFLICT(request_id) DO UPDATE SET
-                    channel_id = excluded.channel_id, message_id = excluded.message_id
-            """, (str(channel_id), str(message_id), request_id))
+                    channel_id = excluded.channel_id, message_id = excluded.message_id,
+                    hospital_text = COALESCE(excluded.hospital_text, discord_revive_requests.hospital_text)
+            """, (str(channel_id), str(message_id), hospital_text, request_id))
             conn.commit()
         finally:
             conn.close()
 
     #######################################################
 
-    def cancel_request(self, request_id: str, discord_user_id: int, allow_force: bool = False):
+    def cancel_request(self, request_id: str, discord_user_id: int, allow_force: bool = False, actor_name: str | None = None):
         conn = self._connect()
         try:
             row = conn.execute(
@@ -1039,22 +1071,21 @@ class ReviveDiscordStore:
                 return False, "not_owner", dict(row)
 
             now = int(time.time())
-            conn.execute(
-                "DELETE FROM revive_requests WHERE request_id = ? AND status = 'pending'",
-                (str(request_id),),
-            )
-            deleted = conn.total_changes
-
-            if deleted <= 0:
-                return False, "already_closed", dict(row)
+            if row["revive_status"] is not None:
+                updated_rows = conn.execute(
+                    "UPDATE revive_requests SET status = 'cancelled' WHERE request_id = ? AND status = 'pending'",
+                    (str(request_id),),
+                ).rowcount
+                if updated_rows <= 0:
+                    return False, "already_closed", dict(row)
 
             conn.execute(
                 """
                 UPDATE discord_revive_requests
-                SET status = 'cancelled', cancelled_at = ?
+                SET status = 'cancelled', cancelled_at = ?, cancelled_by = ?
                 WHERE request_id = ?
                 """,
-                (now, str(request_id)),
+                (now, str(actor_name or discord_user_id), str(request_id)),
             )
             conn.commit()
             updated = conn.execute(
@@ -1080,6 +1111,148 @@ class ReviveDiscordStore:
 
     #######################################################
 
+    REVIVE_STATE_SQL = """
+        SELECT
+            d.*,
+            COALESCE(d.target_name, r.target_name) AS target_name,
+            r.requester_id,
+            r.requester_name,
+            r.requested_timestamp,
+            r.request_kind,
+            r.notes,
+            r.status AS revive_status,
+            r.fulfilled_by_id,
+            r.fulfilled_by_name,
+            r.revived_timestamp
+        FROM discord_revive_requests d
+        LEFT JOIN revive_requests r ON r.request_id = d.request_id
+    """
+
+    def get_revive_request_state(self, request_id: str):
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                self.REVIVE_STATE_SQL + " WHERE d.request_id = ? LIMIT 1",
+                (str(request_id),),
+            ).fetchone()
+            if row is None:
+                # Listener requests have no Discord row until their message is posted.
+                row = conn.execute(
+                    """
+                    SELECT request_id, target_id, target_name, requester_id, requester_name,
+                           requested_timestamp, created_at, request_kind, notes,
+                           status AS revive_status, fulfilled_by_id, fulfilled_by_name,
+                           revived_timestamp, 'active' AS status
+                    FROM revive_requests WHERE request_id = ? LIMIT 1
+                    """,
+                    (str(request_id),),
+                ).fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+
+    @staticmethod
+    def revive_request_is_open(row) -> bool:
+        return (
+            str(row.get("status") or "").lower() == "active"
+            and str(row.get("revive_status") or "pending").lower() == "pending"
+        )
+
+    @staticmethod
+    def revive_request_deadline(row, timeout_seconds: int) -> int:
+        started = int(row.get("requested_timestamp") or row.get("created_at") or 0)
+        return max(started, int(row.get("claimed_at") or 0)) + int(timeout_seconds)
+
+    def claim_revive_request(self, request_id: str, discord_user_id: int, claimer_name: str):
+        row = self.get_revive_request_state(request_id)
+        if row is None:
+            return False, "request_not_found", None
+        if not self.revive_request_is_open(row):
+            return False, "request_not_active", row
+        claimed_by = str(row.get("claimed_by_discord_id") or "")
+        if claimed_by and claimed_by != str(discord_user_id):
+            return False, "already_claimed", row
+        conn = self._connect()
+        try:
+            conn.execute(
+                """
+                UPDATE discord_revive_requests
+                SET claimed_by_discord_id = ?, claimed_by_name = ?, claimed_at = ?
+                WHERE request_id = ? AND status = 'active'
+                  AND COALESCE(claimed_by_discord_id, '') IN ('', ?)
+                """,
+                (str(discord_user_id), str(claimer_name), int(time.time()), str(request_id), str(discord_user_id)),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return True, "claimed", self.get_revive_request_state(request_id)
+
+    def unclaim_revive_request(self, request_id: str, discord_user_id: int, allow_force: bool = False):
+        row = self.get_revive_request_state(request_id)
+        if row is None:
+            return False, "request_not_found", None
+        if not self.revive_request_is_open(row):
+            return False, "request_not_active", row
+        claimed_by = str(row.get("claimed_by_discord_id") or "")
+        if not claimed_by:
+            return False, "not_claimed", row
+        if claimed_by != str(discord_user_id) and not allow_force:
+            return False, "not_claimer", row
+        conn = self._connect()
+        try:
+            conn.execute(
+                """
+                UPDATE discord_revive_requests
+                SET claimed_by_discord_id = NULL, claimed_by_name = NULL, claimed_at = NULL
+                WHERE request_id = ?
+                """,
+                (str(request_id),),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return True, "unclaimed", self.get_revive_request_state(request_id)
+
+    def expire_revive_requests(self, timeout_seconds: int, now: int | None = None, grace_seconds: int = 120):
+        """Expire pending requests whose deadline passed; returns the expired Discord rows."""
+        if int(timeout_seconds or 0) <= 0:
+            return []
+        now = int(now if now is not None else time.time())
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                """
+                SELECT r.request_id, r.requested_timestamp, r.created_at, d.claimed_at
+                FROM revive_requests r
+                LEFT JOIN discord_revive_requests d ON d.request_id = r.request_id
+                WHERE r.status = 'pending' AND COALESCE(d.status, 'active') = 'active'
+                """
+            ).fetchall()
+            expired_ids = [
+                str(row["request_id"])
+                for row in rows
+                if now >= self.revive_request_deadline(dict(row), timeout_seconds) + int(grace_seconds)
+            ]
+            for request_id in expired_ids:
+                conn.execute(
+                    "UPDATE revive_requests SET status = 'expired' WHERE request_id = ? AND status = 'pending'",
+                    (request_id,),
+                )
+                conn.execute(
+                    """
+                    UPDATE discord_revive_requests SET status = 'expired', expired_at = ?
+                    WHERE request_id = ? AND status = 'active'
+                    """,
+                    (now, request_id),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+        return [state for request_id in expired_ids if (state := self.get_revive_request_state(request_id))]
+
+    #######################################################
+
     def list_active_requests(self, limit: int = 25):
         conn = self._connect()
         try:
@@ -1097,7 +1270,9 @@ class ReviveDiscordStore:
                     d.status AS discord_status,
                     d.channel_id,
                     d.message_id,
-                    d.created_at
+                    d.created_at,
+                    d.claimed_by_name,
+                    d.claimed_at
                 FROM discord_revive_requests d
                 LEFT JOIN revive_requests r ON r.request_id = d.request_id
                 WHERE d.status = 'active' AND COALESCE(r.status, 'pending') = 'pending'
@@ -2123,7 +2298,13 @@ def serve_discord_bot(
 
     from services.discord_faction_watchers import DiscordFactionWatchers
     from services.discord_oc_watchers import DiscordOcWatchers
-    from services.discord_revive_operations import DiscordReviveOperations
+    from services.discord_revive_operations import (
+        DiscordReviveOperations,
+        revive_chance_below_minimum,
+        revive_min_chance,
+        revive_ping_role_id,
+        revive_timeout_minutes,
+    )
     from services.revive_operations import revive_payment_text
 
     faction_watchers = DiscordFactionWatchers(
@@ -2355,6 +2536,12 @@ def serve_discord_bot(
         reviver_name: str | None = None,
         reviver_id: int | None = None,
         revived_timestamp: int | None = None,
+        expired: bool = False,
+        claimed_by: str | None = None,
+        claimed_at: int | None = None,
+        expires_at: int | None = None,
+        cancelled_by: str | None = None,
+        chance_warning: str | None = None,
     ):
         kind = str(request_kind or "revive").strip().lower()
         contract_details = revive_operations.request_details(request_id) or {}
@@ -2368,6 +2555,12 @@ def serve_discord_bot(
         elif cancelled:
             color = 0x7f8c8d
             title = f"{kind_label} Request Cancelled"
+        elif expired:
+            color = 0x95a5a6
+            title = f"{kind_label} Request Expired"
+        elif claimed_by:
+            color = 0x3498db
+            title = f"{kind_label} Request Claimed"
         else:
             color = 0xe67e22
             title = f"{kind_label} Request Active"
@@ -2389,6 +2582,11 @@ def serve_discord_bot(
             value=chance_text or "Unavailable: no estimate was captured for this request.",
             inline=False,
         )
+        if chance_warning:
+            embed.add_field(name="Warning", value=chance_warning, inline=False)
+        if claimed_by:
+            claimed_text = str(claimed_by) + (f" <t:{int(claimed_at)}:R>" if claimed_at else "")
+            embed.add_field(name="Claimed By", value=claimed_text, inline=False)
         if contract_details.get("contract_id"):
             embed.add_field(
                 name="Contract",
@@ -2422,11 +2620,125 @@ def serve_discord_bot(
                 embed.add_field(name="Revived At", value=revived_text, inline=False)
             embed.set_footer(text=f"Fulfillment detected from TornIntel {kind_label.lower()} records")
         elif cancelled:
-            embed.set_footer(text="Cancelled from Discord command")
+            embed.set_footer(text=f"Cancelled by {cancelled_by}" if cancelled_by else "Cancelled from Discord")
+        elif expired:
+            embed.set_footer(text="Expired: no faction member revive was logged before the timeout")
         else:
-            embed.set_footer(text=f"Use /ti_revive_cancel <request_id> to cancel while pending")
+            if expires_at:
+                embed.add_field(name="Expires", value=f"<t:{int(expires_at)}:R>", inline=False)
+            embed.set_footer(text="Claim before reviving. Only revives by our faction members fulfill requests.")
 
         return embed
+
+    def revive_request_view(state):
+        request_id = str(state.get("request_id") or "")
+        target_id = int(state.get("target_id") or 0)
+        view = discord.ui.View(timeout=None)
+        interactive = len(REVIVE_UNCLAIM_PREFIX + request_id) <= 100
+        if interactive:
+            if state.get("claimed_by_discord_id"):
+                view.add_item(discord.ui.Button(
+                    style=discord.ButtonStyle.secondary,
+                    label="Unclaim",
+                    custom_id=f"{REVIVE_UNCLAIM_PREFIX}{request_id}",
+                ))
+            else:
+                view.add_item(discord.ui.Button(
+                    style=discord.ButtonStyle.success,
+                    label="Claim",
+                    custom_id=f"{REVIVE_CLAIM_PREFIX}{request_id}",
+                ))
+        if target_id:
+            view.add_item(discord.ui.Button(
+                style=discord.ButtonStyle.link,
+                label="Profile / Revive",
+                url=f"https://www.torn.com/profiles.php?XID={target_id}",
+            ))
+        if interactive:
+            view.add_item(discord.ui.Button(
+                style=discord.ButtonStyle.danger,
+                label="Cancel",
+                custom_id=f"{REVIVE_CANCEL_PREFIX}{request_id}",
+            ))
+        return view
+
+    def revive_chance_warning(request_id):
+        minimum = revive_min_chance(revive_store)
+        chance = revive_store.get_revive_chance_value(request_id)
+        if revive_chance_below_minimum(revive_store, chance):
+            return f"Estimated chance {chance:.2f}% is below the {minimum:g}% minimum."
+        return None
+
+    def build_revive_request_message(state):
+        """Build (embed, view) for a stored revive request; the view is None once closed."""
+        request_id = str(state.get("request_id") or "")
+        discord_status = str(state.get("status") or "active").lower()
+        revive_status = str(state.get("revive_status") or "pending").lower()
+        fulfilled = revive_status == "fulfilled" or discord_status == "fulfilled"
+        cancelled = not fulfilled and (discord_status == "cancelled" or revive_status == "cancelled")
+        expired = not fulfilled and not cancelled and (discord_status == "expired" or revive_status == "expired")
+        is_open = not (fulfilled or cancelled or expired)
+        timeout_minutes = revive_timeout_minutes(revive_store)
+        expires_at = (
+            ReviveDiscordStore.revive_request_deadline(state, timeout_minutes * 60)
+            if is_open and timeout_minutes else None
+        )
+        target_id = int(state.get("target_id") or 0)
+        embed = build_revive_request_embed(
+            request_id=request_id,
+            requester_name=str(state.get("requester_name") or state.get("discord_user_id") or "Requester"),
+            requester_torn_id=state.get("requester_id") or state.get("torn_user_id"),
+            target_id=target_id,
+            target_name=str(state.get("target_name") or f"User {target_id or '?'}"),
+            hospital_description=(
+                "Revive completed" if fulfilled
+                else str(state.get("hospital_text") or state.get("notes") or "In hospital")
+            ),
+            request_kind=state.get("request_kind"),
+            cancelled=cancelled,
+            fulfilled=fulfilled,
+            reviver_name=str(state["fulfilled_by_name"]) if state.get("fulfilled_by_name") is not None else None,
+            reviver_id=int(state["fulfilled_by_id"]) if state.get("fulfilled_by_id") else None,
+            revived_timestamp=int(state["revived_timestamp"]) if state.get("revived_timestamp") else None,
+            expired=expired,
+            claimed_by=state.get("claimed_by_name"),
+            claimed_at=state.get("claimed_at"),
+            expires_at=expires_at,
+            cancelled_by=state.get("cancelled_by"),
+            chance_warning=revive_chance_warning(request_id) if is_open else None,
+        )
+        return embed, (revive_request_view(state) if is_open else None)
+
+    async def fetch_revive_message(state):
+        channel_id = state.get("channel_id")
+        message_id = state.get("message_id")
+        if not channel_id or not message_id:
+            return None
+        channel = bot.get_channel(int(channel_id))
+        if channel is None:
+            channel = await bot.fetch_channel(int(channel_id))
+        return await channel.fetch_message(int(message_id))
+
+    async def refresh_revive_request_message(request_id, state=None):
+        state = state or revive_store.get_revive_request_state(request_id)
+        if not state:
+            return False
+        message = await fetch_revive_message(state)
+        if message is None:
+            return False
+        embed, view = build_revive_request_message(state)
+        await message.edit(embed=embed, view=view)
+        return True
+
+    def revive_ping(request_id, chance_value):
+        """Role mention content and allowed mentions for a newly posted request."""
+        if revive_chance_below_minimum(revive_store, chance_value):
+            return None, discord.AllowedMentions.none()
+        contract = bool((revive_operations.request_details(request_id) or {}).get("contract_id"))
+        role_id = revive_ping_role_id(revive_store, contract=contract)
+        if not role_id:
+            return None, discord.AllowedMentions.none()
+        return f"<@&{role_id}>", discord.AllowedMentions(everyone=False, users=False, roles=[discord.Object(id=role_id)])
 
     def build_oc_delay_embed(row):
         event_type = str(row.get("event_type") or "crime_delay_started").strip().lower()
@@ -2966,7 +3278,7 @@ def serve_discord_bot(
         resolved_target_id = int(target_id) if target_id is not None else int(requester_torn_id)
 
         try:
-            status = check_hospital_status(target_id=resolved_target_id)
+            status = await asyncio.to_thread(check_hospital_status, target_id=resolved_target_id)
         except Exception as exc:
             await send_embed_chunks(
                 interaction.followup.send,
@@ -2990,6 +3302,19 @@ def serve_discord_bot(
             return
 
         target_name = str(status.get("target_name") or f"User {target_id}")
+        estimate = await asyncio.to_thread(revive_chance_tracker.estimate, resolved_target_id)
+        if revive_chance_below_minimum(revive_store, estimate.chance):
+            await send_embed_chunks(
+                interaction.followup.send,
+                title="Revive Request Rejected",
+                text=(
+                    f"Estimated revive chance for {target_name} [{resolved_target_id}] is {estimate.chance:.2f}%, "
+                    f"below the configured minimum of {revive_min_chance(revive_store):g}%."
+                ),
+                ok=False,
+            )
+            return
+
         request_id = revive_store.create_request(
             discord_user_id=requester_discord_id,
             torn_user_id=requester_torn_id,
@@ -2997,22 +3322,21 @@ def serve_discord_bot(
             target_name=target_name,
             requester_name=requester_name,
         )
+        revive_store.save_revive_chance_estimate(request_id, estimate)
         await capture_request_contract(request_id, resolved_target_id, int(time.time()))
-        await capture_revive_chance(request_id, resolved_target_id)
 
         revive_channel = await resolve_revive_channel(interaction)
-        request_embed = build_revive_request_embed(
-            request_id=request_id,
-            requester_name=requester_name,
-            requester_torn_id=requester_torn_id,
-            target_id=resolved_target_id,
-            target_name=target_name,
-            hospital_description=str(status.get("description") or "In hospital"),
-            request_kind="revive",
-            cancelled=False,
+        hospital_text = str(status.get("description") or "In hospital")
+        request_state = revive_store.get_revive_request_state(request_id)
+        request_state["hospital_text"] = hospital_text
+        request_embed, request_view = build_revive_request_message(request_state)
+        content, mentions = revive_ping(request_id, estimate.chance)
+        message = await revive_channel.send(
+            content=content, embed=request_embed, view=request_view, allowed_mentions=mentions,
         )
-        message = await revive_channel.send(embed=request_embed, allowed_mentions=discord.AllowedMentions.none())
-        revive_store.attach_message(request_id, channel_id=int(revive_channel.id), message_id=int(message.id))
+        revive_store.attach_message(
+            request_id, channel_id=int(revive_channel.id), message_id=int(message.id), hospital_text=hospital_text,
+        )
 
         await send_embed_chunks(
             interaction.followup.send,
@@ -3057,17 +3381,28 @@ def serve_discord_bot(
                                 f"{str(sync_result.get('output') or '').splitlines()[-1] if sync_result.get('output') else 'no output'}"
                             )
                     if active_rows:
-                        reconcile_result = await asyncio.to_thread(
-                            bridge.run_foreground,
-                            "revive_requests reconcile --status pending --limit 200 --window-seconds 21600",
-                            timeout_seconds=max(120, int(timeout_seconds or 180)),
-                        )
-                        if not reconcile_result.get("ok"):
+                        try:
+                            await asyncio.to_thread(revive_contracts.reconcile)
+                        except Exception as exc:
                             (logger or logging.getLogger(__name__)).warning(
-                                f"Discord revive watcher reconcile failed (exit {reconcile_result.get('returncode')}): "
-                                f"{str(reconcile_result.get('output') or '').splitlines()[-1] if reconcile_result.get('output') else 'no output'}"
+                                f"Discord revive watcher reconcile failed: {type(exc).__name__}: {exc}"
                             )
                     last_reconcile_at = time.time()
+
+                    # Expire only right after a sync/reconcile so a late-logged revive still counts.
+                    expired_rows = revive_store.expire_revive_requests(
+                        revive_timeout_minutes(revive_store) * 60,
+                        grace_seconds=REVIVE_EXPIRY_GRACE_SECONDS,
+                    )
+                    for expired in expired_rows:
+                        try:
+                            await refresh_revive_request_message(expired["request_id"], expired)
+                        except (discord.NotFound, discord.Forbidden):
+                            pass
+                        except Exception as exc:
+                            (logger or logging.getLogger(__name__)).warning(
+                                f"Could not update expired revive request {expired['request_id']}: {type(exc).__name__}: {exc}"
+                            )
 
                 rows = revive_store.list_fulfilled_pending_embed_updates(limit=50)
                 for row in rows:
@@ -3089,20 +3424,9 @@ def serve_discord_bot(
 
                     try:
                         message = await channel.fetch_message(int(message_id))
-                        embed = build_revive_request_embed(
-                            request_id=request_id,
-                            requester_name=str(row.get("requester_name") or row.get("discord_user_id") or "Requester"),
-                            requester_torn_id=row.get("torn_user_id"),
-                            target_id=int(row.get("target_id") or 0),
-                            target_name=str(row.get("target_name") or f"User {row.get('target_id') or '?'}"),
-                            hospital_description="Revive completed",
-                            request_kind=row.get("request_kind"),
-                            fulfilled=True,
-                            reviver_name=str(row.get("fulfilled_by_name") or "") if row.get("fulfilled_by_name") is not None else None,
-                            reviver_id=int(row.get("fulfilled_by_id")) if row.get("fulfilled_by_id") is not None else None,
-                            revived_timestamp=int(row.get("revived_timestamp")) if row.get("revived_timestamp") is not None else None,
-                        )
-                        await message.edit(embed=embed)
+                        state = revive_store.get_revive_request_state(request_id) or row
+                        embed, _view = build_revive_request_message(state)
+                        await message.edit(embed=embed, view=None)
                         revive_store.mark_embed_fulfilled(request_id)
                     except (discord.NotFound, discord.Forbidden):
                         revive_store.mark_embed_fulfilled(request_id)
@@ -3158,18 +3482,17 @@ def serve_discord_bot(
                         )
                         await capture_revive_chance(request_id, target_id)
 
-                        embed = build_revive_request_embed(
-                            request_id=request_id,
-                            requester_name=requester_name,
-                            requester_torn_id=row.get("requester_id"),
-                            target_id=target_id,
-                            target_name=target_name,
-                            hospital_description=notes,
-                            request_kind=request_kind,
-                            cancelled=False,
-                        )
-                        message = await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
-                        revive_store.attach_listener_message(request_id, int(channel.id), int(message.id))
+                        state = revive_store.get_revive_request_state(request_id) or {
+                            "request_id": request_id, "target_id": target_id, "target_name": target_name,
+                            "requester_name": requester_name, "requester_id": row.get("requester_id"),
+                            "request_kind": request_kind, "status": "active",
+                            "requested_timestamp": row.get("created_at"),
+                        }
+                        state["hospital_text"] = notes
+                        embed, view = build_revive_request_message(state)
+                        content, mentions = revive_ping(request_id, revive_store.get_revive_chance_value(request_id))
+                        message = await channel.send(content=content, embed=embed, view=view, allowed_mentions=mentions)
+                        revive_store.attach_listener_message(request_id, int(channel.id), int(message.id), hospital_text=notes)
                         revive_store.mark_notification_discord_posted(int(row["notification_id"]))
                         if logger:
                             logger.info(
@@ -3531,6 +3854,102 @@ def serve_discord_bot(
                 await interaction.response.send_message("Only the requester or a banker can cancel this request.", ephemeral=True)
             else:
                 await interaction.response.send_modal(BankCancelModal(request_id))
+
+    REVIVE_ACTION_ERRORS = {
+        "request_not_found": "No request found for that ID.",
+        "request_not_active": "That request is no longer active.",
+        "not_owner": "Only the requester, the target or a moderator can cancel this request.",
+        "already_closed": "This request is already closed.",
+        "already_claimed": "Someone else already claimed this request.",
+        "not_claimed": "This request is not claimed.",
+        "not_claimer": "Only the claimer or a moderator can unclaim this request.",
+    }
+
+    def can_moderate_revives(user):
+        return bool(getattr(getattr(user, "guild_permissions", None), "manage_messages", False))
+
+    def may_cancel_revive(user, row):
+        if can_moderate_revives(user):
+            return True
+        if str(row.get("discord_user_id") or "") == str(user.id):
+            return True
+        torn_id = revive_store.get_user_torn_id(int(user.id))
+        return torn_id is not None and int(torn_id) in {
+            int(row.get("target_id") or 0), int(row.get("torn_user_id") or 0),
+        }
+
+    async def cancel_revive_request(request_id, user):
+        """Cancel a request for a Discord user and update its message; returns (ok, reason)."""
+        row = revive_store.get_discord_request(request_id)
+        allow_force = bool(row) and may_cancel_revive(user, row)
+        ok, reason, _row = revive_store.cancel_request(
+            request_id=str(request_id),
+            discord_user_id=int(user.id),
+            allow_force=allow_force,
+            actor_name=str(getattr(user, "display_name", None) or getattr(user, "name", None) or user.id),
+        )
+        if ok:
+            try:
+                await refresh_revive_request_message(request_id)
+            except Exception as exc:
+                (logger or logging.getLogger(__name__)).warning(
+                    f"Could not update cancelled revive request {request_id}: {type(exc).__name__}: {exc}"
+                )
+        return ok, reason
+
+    async def handle_revive_button(interaction, action, request_id):
+        user = interaction.user
+        if action == "cancel":
+            ok, reason = await cancel_revive_request(request_id, user)
+            await interaction.response.send_message(
+                "Revive request cancelled." if ok else REVIVE_ACTION_ERRORS.get(reason, reason),
+                ephemeral=True,
+            )
+            return
+        if action == "claim":
+            ok, reason, state = revive_store.claim_revive_request(request_id, int(user.id), f"<@{int(user.id)}>")
+        else:
+            ok, reason, state = revive_store.unclaim_revive_request(
+                request_id, int(user.id), allow_force=can_moderate_revives(user),
+            )
+        if not ok:
+            await interaction.response.send_message(REVIVE_ACTION_ERRORS.get(reason, reason), ephemeral=True)
+            if state and reason == "request_not_active":
+                try:
+                    await refresh_revive_request_message(request_id, state)
+                except Exception:
+                    pass
+            return
+        embed, view = build_revive_request_message(state)
+        await interaction.response.edit_message(embed=embed, view=view)
+        if action == "claim":
+            target_id = int(state.get("target_id") or 0)
+            link_view = discord.ui.View()
+            link_view.add_item(discord.ui.Button(
+                style=discord.ButtonStyle.link,
+                label="Open profile to revive",
+                url=f"https://www.torn.com/profiles.php?XID={target_id}",
+            ))
+            await interaction.followup.send(
+                f"You claimed the revive for {state.get('target_name') or target_id}. "
+                "Only a revive by a member of our factions fulfills the request.",
+                view=link_view,
+                ephemeral=True,
+            )
+
+    @bot.listen("on_interaction")
+    async def revive_request_button_listener(interaction: discord.Interaction):
+        if interaction.type != discord.InteractionType.component:
+            return
+        custom_id = str((interaction.data or {}).get("custom_id") or "")
+        for prefix, action in (
+            (REVIVE_CLAIM_PREFIX, "claim"),
+            (REVIVE_UNCLAIM_PREFIX, "unclaim"),
+            (REVIVE_CANCEL_PREFIX, "cancel"),
+        ):
+            if custom_id.startswith(prefix):
+                await handle_revive_button(interaction, action, custom_id[len(prefix):])
+                return
 
     async def bank_request_alert_watcher():
         poll_seconds = 2
@@ -4102,19 +4521,9 @@ def serve_discord_bot(
 
         @bot.command(name="revive_cancel")
         async def revive_cancel_cmd(ctx, request_id: str):
-            allow_force = bool(getattr(ctx.author.guild_permissions, "manage_messages", False))
-            ok, reason, _request_row = revive_store.cancel_request(
-                request_id=str(request_id),
-                discord_user_id=int(ctx.author.id),
-                allow_force=allow_force,
-            )
+            ok, reason = await cancel_revive_request(request_id, ctx.author)
             if not ok:
-                reason_text = {
-                    "request_not_found": "No request found for that ID.",
-                    "request_not_active": "That request is not active.",
-                    "not_owner": "Only the original requester (or a moderator) can cancel this request.",
-                    "already_closed": "This request is already closed.",
-                }.get(reason, f"Unable to cancel request ({reason}).")
+                reason_text = REVIVE_ACTION_ERRORS.get(reason, f"Unable to cancel request ({reason}).")
                 await send_embed_chunks(ctx.send, title="Revive Cancel Failed", text=reason_text, ok=False)
                 return
 
@@ -4134,6 +4543,7 @@ def serve_discord_bot(
                 target_name = row.get("target_name") or f"User {row.get('target_id') or '?'}"
                 lines.append(
                     f"{ts_text} | {row.get('request_id')} | {target_name} [{row.get('target_id')}] | requester={row.get('requester_name') or row.get('discord_user_id')}"
+                    f"{' | claimed by ' + str(row['claimed_by_name']) if row.get('claimed_by_name') else ''}"
                 )
 
             await send_embed_chunks(ctx.send, title="Active Revive Requests", text="\n".join(lines), ok=True)
@@ -4284,48 +4694,15 @@ def serve_discord_bot(
     async def ti_revive_cancel_slash(interaction: discord.Interaction, request_id: str):
         await interaction.response.defer(thinking=True)
 
-        member = interaction.guild.get_member(interaction.user.id) if interaction.guild else None
-        allow_force = bool(member and member.guild_permissions.manage_messages)
-        ok, reason, request_row = revive_store.cancel_request(
-            request_id=str(request_id),
-            discord_user_id=int(interaction.user.id),
-            allow_force=allow_force,
-        )
-
+        ok, reason = await cancel_revive_request(str(request_id), interaction.user)
         if not ok:
-            reason_text = {
-                "request_not_found": "No request found for that ID.",
-                "request_not_active": "That request is not active.",
-                "not_owner": "Only the original requester (or a moderator) can cancel this request.",
-                "already_closed": "This request is already closed.",
-            }.get(reason, f"Unable to cancel request ({reason}).")
             await send_embed_chunks(
                 interaction.followup.send,
                 title="Revive Cancel Failed",
-                text=reason_text,
+                text=REVIVE_ACTION_ERRORS.get(reason, f"Unable to cancel request ({reason})."),
                 ok=False,
             )
             return
-
-        channel_id = request_row.get("channel_id")
-        message_id = request_row.get("message_id")
-        if channel_id and message_id:
-            try:
-                channel = bot.get_channel(int(channel_id)) or await bot.fetch_channel(int(channel_id))
-                message = await channel.fetch_message(int(message_id))
-                edited = build_revive_request_embed(
-                    request_id=str(request_id),
-                    requester_name=str(interaction.user.display_name),
-                    requester_torn_id=request_row.get("torn_user_id"),
-                    target_id=int(request_row.get("target_id") or 0),
-                    target_name=str(request_row.get("target_name") or f"User {request_row.get('target_id') or '?'}"),
-                    hospital_description="Cancelled via Discord command",
-                    request_kind=request_row.get("request_kind"),
-                    cancelled=True,
-                )
-                await message.edit(embed=edited)
-            except Exception:
-                pass
 
         await send_embed_chunks(
             interaction.followup.send,
@@ -4355,6 +4732,7 @@ def serve_discord_bot(
             target_name = row.get("target_name") or f"User {row.get('target_id') or '?'}"
             lines.append(
                 f"{ts_text} | {row.get('request_id')} | {target_name} [{row.get('target_id')}] | requester={row.get('requester_name') or row.get('discord_user_id')}"
+                    f"{' | claimed by ' + str(row['claimed_by_name']) if row.get('claimed_by_name') else ''}"
             )
 
         await send_embed_chunks(

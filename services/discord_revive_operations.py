@@ -17,6 +17,60 @@ from services.revive_chance import ReviveChanceTracker
 from utils.logger import Logger
 
 
+REVIVE_TIMEOUT_SETTING = "revive_request_timeout_minutes"
+REVIVE_MIN_CHANCE_SETTING = "revive_min_chance"
+REVIVE_REGULAR_ROLE_SETTING = "revive_regular_role_id"
+REVIVE_CONTRACT_ROLE_SETTING = "revive_contract_role_id"
+DEFAULT_REVIVE_TIMEOUT_MINUTES = 15
+MAX_REVIVE_TIMEOUT_MINUTES = 1440
+
+
+def _int_setting(store, key):
+    value = store.get_setting(key)
+    try:
+        return int(str(value).strip()) if value not in (None, "") else None
+    except ValueError:
+        return None
+
+
+def revive_timeout_minutes(store) -> int:
+    """Minutes a revive request stays open (0 disables expiry)."""
+    value = _int_setting(store, REVIVE_TIMEOUT_SETTING)
+    if value is None:
+        return DEFAULT_REVIVE_TIMEOUT_MINUTES
+    return max(0, min(MAX_REVIVE_TIMEOUT_MINUTES, value))
+
+
+def revive_min_chance(store) -> float | None:
+    value = store.get_setting(REVIVE_MIN_CHANCE_SETTING)
+    try:
+        chance = float(value) if value not in (None, "") else None
+    except ValueError:
+        return None
+    return chance if chance and chance > 0 else None
+
+
+def revive_chance_below_minimum(store, chance) -> bool:
+    """Unknown estimates are never below the minimum."""
+    minimum = revive_min_chance(store)
+    return minimum is not None and chance is not None and float(chance) < minimum
+
+
+def revive_ping_role_id(store, contract: bool) -> int | None:
+    key = REVIVE_CONTRACT_ROLE_SETTING if contract else REVIVE_REGULAR_ROLE_SETTING
+    return _int_setting(store, key)
+
+
+def contract_price_keys(provider_tag) -> tuple[str, str]:
+    tag = str(provider_tag or "").upper()
+    return f"revive_contract_success_price_{tag}", f"revive_contract_failure_price_{tag}"
+
+
+def contract_default_prices(store, provider_tag) -> tuple[int | None, int | None]:
+    success_key, failure_key = contract_price_keys(provider_tag)
+    return _int_setting(store, success_key), _int_setting(store, failure_key)
+
+
 def register_revive_log_command(bot, settings, operations, default_direction="both"):
     factions = [
         app_commands.Choice(name=f"{f.tag} - {f.name}"[:100], value=f.tag)
@@ -148,8 +202,8 @@ class DiscordReviveOperations:
             target_faction_id="Faction receiving contracted revives",
             start_at="Contract start time as Unix timestamp",
             amount="Successful-revive target; failures are counted separately",
-            success_price="Price in Torn dollars per successful revive",
-            failure_price="Price in Torn dollars per failed attempt",
+            success_price="Price per successful revive (defaults to /ti_revive_settings)",
+            failure_price="Price per failed attempt (defaults to /ti_revive_settings)",
             contract_id="Contract ID for end, report or estimate",
             target_id="Target Torn ID for a contract chance estimate",
         )
@@ -170,8 +224,14 @@ class DiscordReviveOperations:
                     selected = self.settings.get_faction(provider) if provider else None
                     if selected is None or not selected.faction_id or not selected.api_keys:
                         raise ValueError("Choose a provider with a configured faction ID and key pool.")
+                    default_success, default_failure = contract_default_prices(self.store, selected.tag)
+                    success_price = default_success if success_price is None else success_price
+                    failure_price = default_failure if failure_price is None else failure_price
                     if None in (target_faction_id, start_at, amount, success_price, failure_price):
-                        raise ValueError("Provide target_faction_id, start_at, amount, success_price and failure_price.")
+                        raise ValueError(
+                            "Provide target_faction_id, start_at, amount, success_price and failure_price "
+                            "(prices can default from /ti_revive_settings)."
+                        )
                     contract_id = self.operations.start_contract(
                         selected, target_faction_id, start_at, amount, success_price,
                         failure_price, interaction.user.id, now,
@@ -224,6 +284,110 @@ class DiscordReviveOperations:
                 await interaction.followup.send(str(exc), ephemeral=True)
                 return
             await self.send_chunks(interaction, text)
+
+        self.register_settings_command(factions)
+
+    def settings_text(self) -> str:
+        timeout = revive_timeout_minutes(self.store)
+        minimum = revive_min_chance(self.store)
+        regular = revive_ping_role_id(self.store, contract=False)
+        contract = revive_ping_role_id(self.store, contract=True)
+        lines = [
+            f"Request timeout: {f'{timeout} minutes' if timeout else 'disabled'} (claiming restarts the timer)",
+            f"Minimum revive chance: {f'{minimum:g}%' if minimum is not None else 'off'} "
+            "(skill-100 estimate; unknown estimates are accepted)",
+            f"Regular request role: {f'<@&{regular}>' if regular else 'none'}",
+            f"Contract request role: {f'<@&{contract}>' if contract else 'none'}",
+            "Default contract prices:",
+        ]
+        for faction in self.settings.list_factions():
+            success, failure = contract_default_prices(self.store, faction.tag)
+            lines.append(
+                f"- {faction.tag}: success {f'${success:,}' if success is not None else 'unset'}, "
+                f"failure {f'${failure:,}' if failure is not None else 'unset'}"
+            )
+        return "\n".join(lines)
+
+    def register_settings_command(self, factions):
+        @self.bot.tree.command(name="ti_revive_settings", description="Configure revive request timeouts, pings and contract defaults")
+        @app_commands.default_permissions(manage_channels=True)
+        @app_commands.choices(
+            action=[
+                app_commands.Choice(name="Status", value="status"),
+                app_commands.Choice(name="Configure", value="configure"),
+            ],
+            provider=factions,
+            clear_role=[
+                app_commands.Choice(name="Regular role", value="regular"),
+                app_commands.Choice(name="Contract role", value="contract"),
+                app_commands.Choice(name="Both roles", value="both"),
+            ],
+        )
+        @app_commands.describe(
+            timeout_minutes=f"Minutes before an unrevived request expires (0 disables, max {MAX_REVIVE_TIMEOUT_MINUTES})",
+            min_chance="Reject requests whose estimated revive chance is below this percent (0 disables)",
+            regular_role="Role pinged for regular revive requests",
+            contract_role="Role pinged for contract revive requests",
+            clear_role="Stop pinging a role",
+            provider="Providing faction for the default contract prices",
+            success_price="Default price per successful contract revive for the provider",
+            failure_price="Default price per failed contract attempt for the provider",
+        )
+        async def ti_revive_settings(
+            interaction: discord.Interaction,
+            action: str = "status",
+            timeout_minutes: app_commands.Range[int, 0, MAX_REVIVE_TIMEOUT_MINUTES] | None = None,
+            min_chance: app_commands.Range[float, 0.0, 100.0] | None = None,
+            regular_role: discord.Role | None = None,
+            contract_role: discord.Role | None = None,
+            clear_role: str | None = None,
+            provider: str | None = None,
+            success_price: app_commands.Range[int, 0] | None = None,
+            failure_price: app_commands.Range[int, 0] | None = None,
+        ):
+            if not self.can_manage(interaction):
+                await interaction.response.send_message("Manage Channels permission is required.", ephemeral=True)
+                return
+            if action == "configure":
+                if (success_price is not None or failure_price is not None) and provider is None:
+                    await interaction.response.send_message(
+                        "Choose a provider when setting default contract prices.", ephemeral=True,
+                    )
+                    return
+                changes = []
+                if timeout_minutes is not None:
+                    self.store.set_setting(REVIVE_TIMEOUT_SETTING, str(int(timeout_minutes)))
+                    changes.append("timeout")
+                if min_chance is not None:
+                    self.store.set_setting(REVIVE_MIN_CHANCE_SETTING, str(float(min_chance)) if min_chance > 0 else "")
+                    changes.append("minimum chance")
+                if clear_role in ("regular", "both"):
+                    self.store.set_setting(REVIVE_REGULAR_ROLE_SETTING, "")
+                    changes.append("regular role cleared")
+                if clear_role in ("contract", "both"):
+                    self.store.set_setting(REVIVE_CONTRACT_ROLE_SETTING, "")
+                    changes.append("contract role cleared")
+                if regular_role is not None:
+                    self.store.set_setting(REVIVE_REGULAR_ROLE_SETTING, str(regular_role.id))
+                    changes.append("regular role")
+                if contract_role is not None:
+                    self.store.set_setting(REVIVE_CONTRACT_ROLE_SETTING, str(contract_role.id))
+                    changes.append("contract role")
+                success_key, failure_key = contract_price_keys(provider)
+                if success_price is not None:
+                    self.store.set_setting(success_key, str(int(success_price)))
+                    changes.append(f"{provider} success price")
+                if failure_price is not None:
+                    self.store.set_setting(failure_key, str(int(failure_price)))
+                    changes.append(f"{provider} failure price")
+                header = f"Updated: {', '.join(changes)}." if changes else "No settings were provided; nothing changed."
+            else:
+                header = "Revive request settings:"
+            await interaction.response.send_message(
+                f"{header}\n{self.settings_text()}",
+                ephemeral=True,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
 
     @staticmethod
     async def send_chunks(interaction, text):
