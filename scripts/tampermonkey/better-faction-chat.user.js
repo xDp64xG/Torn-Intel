@@ -1,15 +1,21 @@
 // ==UserScript==
 // @name         Better Faction Chat – Torn.com (Desktop + Torn PDA)
 // @namespace    https://torn.com/
-// @version      1.6.8
-// @description  Desktop and Torn PDA faction chat tools: status, group tags, officer groups, search, timestamps and touch-friendly controls
+// @version      2.1.1
+// @description  Desktop and Torn PDA faction chat tools: status, group tags, officer groups, search, timestamps, reactions and touch-friendly controls
 // @author       sercann
 // @match        https://www.torn.com/*
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
+// @grant        GM_setClipboard
 // @connect      api.torn.com
+// @connect      raw.githubusercontent.com
+// @connect      trycloudflare.com
+// @connect      127.0.0.1
+// @connect      localhost
+// @connect      *
 // @run-at       document-start
 // @license      MIT
 // @updateURL    https://raw.githubusercontent.com/xDp64xG/Torn-Intel/main/scripts/tampermonkey/better-faction-chat.user.js
@@ -19,7 +25,7 @@
 (function () {
     'use strict';
 
-    const BFC_VERSION = '1.6.8';
+    const BFC_VERSION = '2.1.1';
     const STORE_KEY   = 'bfc_settings_v2';
     const API_BASE    = 'https://api.torn.com';
     const PDA_KEY     = '###PDA-APIKEY###';
@@ -29,6 +35,7 @@
     const DEFAULTS = {
         apiKey:           '',
         username:         '',
+        userId:           '',
         factionName:      '',
         factionTag:       '',
         refreshInterval:  60,
@@ -38,11 +45,28 @@
         autoScroll:       true,
         mentionEnabled:   true,
         hideGearBtn:      false,
+        quickReactEnabled: true,
+        quickReactions:   ['👍', '😂', '❤️', '🔥'],
+        reactionNotify:   true,
+        reactionsEnabled: true,
+        reactionServer:   '',
         officerIds:       [],
         statusColors: { online: '#00e676', idle: '#ffab40', offline: '#546e7a' },
         mentionColor:     '#ff5252',
         accentColor:      '#29b6f6',
     };
+
+    // Accepts an array or a space/comma separated string; keeps up to 6 unique emoji.
+    function parseQuickReactions(value, fallback) {
+        const parts = Array.isArray(value) ? value : String(value || '').split(/[\s,]+/);
+        const out = [];
+        for (const part of parts) {
+            const emoji = String(part || '').trim();
+            if (emoji && emoji.length <= 16 && !out.includes(emoji)) out.push(emoji);
+            if (out.length >= 6) break;
+        }
+        return out.length ? out : (fallback || []).slice();
+    }
 
     function loadCfg() {
         let raw = null;
@@ -69,7 +93,8 @@
             const saved = JSON.parse(raw);
             return Object.assign({}, DEFAULTS, saved, {
                 statusColors: Object.assign({}, DEFAULTS.statusColors, saved.statusColors || {}),
-                officerIds: Array.isArray(saved.officerIds) ? saved.officerIds.map(String) : []
+                officerIds: Array.isArray(saved.officerIds) ? saved.officerIds.map(String) : [],
+                quickReactions: parseQuickReactions(saved.quickReactions, DEFAULTS.quickReactions),
             });
         } catch(e) {
             return Object.assign({}, DEFAULTS);
@@ -162,6 +187,8 @@
         .bfc-tb-btn:hover { background:#3d3d3d; color:#fff; border-color:#555; }
         .bfc-tb-on { color:${CFG.statusColors.online}!important; border-color:${CFG.statusColors.online}40!important; background:rgba(0,230,118,.1)!important; }
         #bfc-status-pill { font-size:11px; color:#888; white-space:nowrap; padding:2px 6px; background:#111; border-radius:4px; border:1px solid #2a2a2a; }
+        #bfc-toast { position:fixed; left:50%; bottom:90px; transform:translateX(-50%); z-index:2147483646; max-width:min(92vw,460px); background:#2a1414; color:#ffd7d7; border:1px solid #a33; border-radius:6px; padding:8px 10px; font:12px/1.4 sans-serif; box-shadow:0 4px 16px rgba(0,0,0,.6); display:flex; gap:8px; align-items:center; }
+        #bfc-toast button { background:#3a2020; color:#fff; border:1px solid #a33; border-radius:4px; padding:3px 8px; cursor:pointer; font-size:11px; white-space:nowrap; }
 
         #bfc-search-bar { display:none; align-items:center; gap:5px; padding:6px 8px; background:#181818; border-top:1px solid #2e2e2e; box-sizing:border-box; width:100%; }
         #bfc-search-bar.bfc-active { display:flex; }
@@ -180,6 +207,21 @@
         .bfc-cp-btn { position:absolute; right:2px; top:50%; transform:translateY(-50%); background:#2d2d2d; border:1px solid #444; border-radius:4px; color:#888; width:22px; height:22px; cursor:pointer; display:none; align-items:center; justify-content:center; flex-shrink:0; transition:all .15s; z-index:10; }
         .bfc-cp-btn:hover { background:#444; color:#fff; border-color:#666; }
         .bfc-msg-container:hover .bfc-cp-btn { display:inline-flex; }
+        .bfc-msg-container.bfc-has-rx .bfc-cp-btn { top:4px; transform:none; }
+
+        .bfc-qr { position:absolute; right:28px; top:2px; display:none; gap:2px; padding:2px 3px; background:#1b1f24; border:1px solid #3a3f46; border-radius:12px; box-shadow:0 2px 8px rgba(0,0,0,.5); z-index:11; }
+        .bfc-msg-container:hover .bfc-qr, .bfc-qr.bfc-open { display:inline-flex; }
+        .bfc-qr-btn { background:transparent; border:0; border-radius:8px; cursor:pointer; font-size:13px; line-height:1; padding:2px 3px; transition:transform .12s, background .12s; }
+        .bfc-qr-btn:hover { background:rgba(255,255,255,.12); transform:scale(1.2); }
+        .bfc-qr-btn.bfc-qr-busy { opacity:.45; pointer-events:none; }
+        .bfc-msg-container.bfc-has-rx { flex-wrap:wrap; }
+        .bfc-rx-row { display:flex; flex-wrap:wrap; gap:4px; flex-basis:100%; width:100%; order:99; margin:3px 0 1px; }
+        .bfc-rx-chip { display:inline-flex; align-items:center; gap:3px; background:#22272e; border:1px solid #3a3f46; border-radius:10px; color:#c9d1d9; cursor:pointer; font-size:11px; line-height:1; padding:2px 7px; }
+        .bfc-rx-chip:hover { background:#2d333b; border-color:#58616b; }
+        .bfc-rx-chip.bfc-rx-mine { background:rgba(41,182,246,.18); border-color:#29b6f6; color:#e6f6ff; }
+        .bfc-reacted { box-shadow:inset 3px 0 0 #ffd54f; animation:bfc-react-pulse 1.2s ease-in-out 3; }
+        @keyframes bfc-react-pulse { 0%,100%{background:rgba(255,213,79,.06)} 50%{background:rgba(255,213,79,.2)} }
+        #bfc-notify-bar.bfc-rx-only { background:linear-gradient(135deg,#8a6d00,#d4a514); }
 
         #bfc-member-popup { position:fixed; z-index:9999999; background:#0d1117; border:1px solid #21262d; border-radius:10px; box-shadow:0 8px 28px rgba(0,0,0,.7); padding:8px 0; width:270px; max-height:340px; overflow-y:auto; display:none; font-family:'Segoe UI',sans-serif; font-size:12px; }
         #bfc-member-popup.bfc-open { display:block; animation:bfc-fadein .15s ease; }
@@ -281,6 +323,9 @@
             .bfc-sw input:checked+.bfc-swt::before { transform:translateX(18px); }
             .bfc-inp, .bfc-inp-num, #bfc-save-btn, #bfc-test-btn { min-height:42px; font-size:16px; }
             .bfc-cp-btn { display:inline-flex; width:30px; height:30px; }
+            .bfc-qr { right:36px; }
+            .bfc-qr-btn { font-size:18px; padding:5px 6px; touch-action:manipulation; }
+            .bfc-rx-chip { font-size:13px; padding:4px 9px; touch-action:manipulation; }
             .bfc-msg-container { padding-right:36px!important; }
         }
     `);
@@ -356,7 +401,7 @@
         for (const sel of MSG_ITEM_SELECTORS) {
             const items = Array.from(root.querySelectorAll(sel)).filter(el =>
                 !NON_MESSAGE_CLASS_RX.test(el.getAttribute('class') || '') &&
-                !el.closest('#bfc-toolbar, #bfc-search-bar, #bfc-notify-bar, #bfc-mention-popup'));
+                !el.closest('#bfc-toolbar, #bfc-search-bar, #bfc-notify-bar, #bfc-mention-popup, .bfc-qr, .bfc-rx-row'));
             if (items.length > 0) return items;
         }
         return [];
@@ -366,6 +411,83 @@
     }
     function findBodyEl(msgEl) {
         return firstMatch(msgEl, BODY_SELECTORS);
+    }
+
+    // ── Message text helpers ──────────────────────────────────────────────────
+    const BFC_UI_SELECTOR = '.bfc-ts, .bfc-cp-btn, .bfc-qr, .bfc-icons-wrapper';
+    const BFC_ALWAYS_SKIP = '.bfc-qr, .bfc-rx-row';
+    const EMOJI_RX = /\p{Extended_Pictographic}|\p{Regional_Indicator}/u;
+
+    // Text of a node without BFC's reaction UI (and optionally without BFC's other UI).
+    function messageText(root, msgEl, skipBfcUi) {
+        if (!root) return '';
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+            acceptNode(node) {
+                const p = node.parentElement;
+                if (!p) return NodeFilter.FILTER_ACCEPT;
+                if (p.closest(BFC_ALWAYS_SKIP)) return NodeFilter.FILTER_REJECT;
+                if (skipBfcUi && p.closest(BFC_UI_SELECTOR)) return NodeFilter.FILTER_REJECT;
+                return NodeFilter.FILTER_ACCEPT;
+            },
+        });
+        let text = '';
+        while (walker.nextNode()) text += walker.currentNode.nodeValue;
+        return text;
+    }
+
+    const msgFiberPaths = new WeakMap();
+
+    // Firefox userscript sandboxes hide page-set expandos (React fibers) behind Xray wrappers.
+    function pageObj(el) {
+        try { return (el && el.wrappedJSObject) || el; } catch (e) { return el; }
+    }
+
+    function fiberKeyOf(el) {
+        return Object.keys(pageObj(el)).find(k => k.startsWith('__reactFiber$'));
+    }
+
+    function fiberOf(el) {
+        const key = fiberKeyOf(el);
+        return key ? pageObj(el)[key] : null;
+    }
+
+    // Torn's message component (since the reactions update) receives the text as `message` plus
+    // senderName/userId/self; older builds passed a `message` object.
+    function messageDataFrom(props) {
+        if (!props || typeof props !== 'object') return null;
+        if (props.message && typeof props.message === 'object') return props.message;
+        if (typeof props.senderName === 'string' && 'message' in props) return props;
+        return null;
+    }
+
+    // Finds (once per element) which fiber carries the message object, then re-reads it cheaply.
+    function messageData(msgEl) {
+        let path = msgFiberPaths.get(msgEl);
+        if (path && !pageObj(path.el)[path.key]) path = undefined;
+        if (path === undefined) {
+            path = null;
+            try {
+                const els = [msgEl, ...Array.from(msgEl.querySelectorAll('*')).slice(0, 30)];
+                outer: for (const el of els) {
+                    const key = fiberKeyOf(el);
+                    if (!key) continue;
+                    let node = pageObj(el)[key];
+                    for (let depth = 0; depth < 10 && node; depth++, node = node.return) {
+                        if (messageDataFrom(node.memoizedProps)) {
+                            path = { el, key, depth };
+                            break outer;
+                        }
+                    }
+                }
+            } catch (e) {}
+            msgFiberPaths.set(msgEl, path);
+        }
+        if (!path) return null;
+        try {
+            let node = pageObj(path.el)[path.key];
+            for (let i = 0; i < path.depth && node; i++) node = node.return;
+            return messageDataFrom(node && node.memoizedProps);
+        } catch (e) { return null; }
     }
 
     let memberCache = {}, nameIndex = {}, pollTimer = null;
@@ -459,10 +581,11 @@
     }
 
     async function fetchMyUsername() {
-        if (!CFG.apiKey || CFG.username) return;
+        if (!CFG.apiKey || (CFG.username && CFG.userId)) return;
         const d = unwrap(await apiFetch('/v2/user/basic'), 'basic') || unwrap(await apiFetch('/user/?selections=basic'), 'basic');
         if (d && d.name) {
             CFG.username = d.name;
+            CFG.userId = String(d.id ?? d.player_id ?? CFG.userId ?? '');
             saveCfg(CFG);
             const el = document.getElementById('bfc-disp-user');
             if (el) el.textContent = d.name;
@@ -925,7 +1048,7 @@
 
     function getMsgFingerprint(msgEl) {
         const sender = (findNameEl(msgEl)?.textContent || '').trim().replace(/[:\s]+$/, '').slice(0, 30);
-        const body   = (findBodyEl(msgEl) || msgEl).textContent.trim().slice(0, 80);
+        const body   = messageText(findBodyEl(msgEl) || msgEl, msgEl, false).trim().slice(0, 80);
         const ts     = getMsgTimestamp(msgEl);
         return sender + '|' + ts + '|' + body;
     }
@@ -963,22 +1086,37 @@
     function refreshBar() {
         if (!notifyBar) return;
         const n = mentionStack.length;
+        const reactions = mentionStack.filter(m => m.kind === 'reaction').length;
+        const mentions = n - reactions;
         notifyBar.classList.toggle('bfc-active', n > 0);
+        notifyBar.classList.toggle('bfc-rx-only', n > 0 && mentions === 0);
         const badge = document.getElementById('bfc-nb-badge');
         const label = document.getElementById('bfc-nb-label');
         if (badge) badge.textContent = n > 99 ? '99+' : n;
-        if (label) label.textContent = n === 1 ? 'You were mentioned — click to jump' : `Mentioned ${n}× · ${mentionIdx + 1}/${n}`;
+        if (!label) return;
+        if (n === 1) {
+            label.textContent = reactions
+                ? `${mentionStack[0].emoji || 'New'} reaction on your message — click to jump`
+                : 'You were mentioned — click to jump';
+        } else if (!reactions) {
+            label.textContent = `Mentioned ${n}× · ${mentionIdx + 1}/${n}`;
+        } else if (!mentions) {
+            label.textContent = `${n} new reactions · ${mentionIdx + 1}/${n}`;
+        } else {
+            label.textContent = `${mentions} mention${mentions === 1 ? '' : 's'} · ${reactions} reaction${reactions === 1 ? '' : 's'} · ${mentionIdx + 1}/${n}`;
+        }
     }
 
-    function checkMention(msgEl, fp, isNew) {
+    function checkMention(msgEl, fp, isNew, text) {
         if (!CFG.mentionEnabled || !CFG.username) return;
 
-        const hasMention = new RegExp('@' + escRx(CFG.username) + '\\b', 'i').test(msgEl.textContent) || /@everyone\b/i.test(msgEl.textContent);
+        if (text === undefined) text = messageText(msgEl, msgEl, true);
+        const hasMention = new RegExp('@' + escRx(CFG.username) + '\\b', 'i').test(text) || /@everyone\b/i.test(text);
 
         if (isNew && hasMention) {
             if (!mentionedFps.has(fp)) {
                 saveMentionFp(fp);
-                mentionStack.push({ fp: fp, el: msgEl });
+                mentionStack.push({ fp: fp, el: msgEl, kind: 'mention' });
                 refreshBar();
             }
         }
@@ -986,7 +1124,7 @@
         if (mentionedFps.has(fp)) {
             msgEl.classList.add('bfc-mentioned');
             msgEl.dataset.bfcMentioned = '1';
-            const stackItem = mentionStack.find(m => m.fp === fp);
+            const stackItem = mentionStack.find(m => m.fp === fp && m.kind !== 'reaction');
             if (stackItem) stackItem.el = msgEl;
         }
     }
@@ -1004,9 +1142,420 @@
     }
 
     function clearMentions() {
+        mentionStack.forEach(m => { if (m.kind === 'reaction' && m.el) m.el.classList.remove('bfc-reacted'); });
         mentionStack = [];
         mentionIdx = 0;
         refreshBar();
+    }
+
+    // ── Reactions ─────────────────────────────────────────────────────────────
+    // Torn chat has no reactions, so BFC stores them on the Torn-Intel listener (the same server
+    // revive/bank requests use), keyed by Torn's chat message id. Load is kept tiny: one batched
+    // request per poll, only while faction chat is open and the tab is visible, and the DOM is
+    // only touched when a message's reactions actually change.
+    const RX_POLL_MS = 15000;
+    const RX_DISCOVERY_URL = 'https://raw.githubusercontent.com/xDp64xG/Torn-Intel/main/scripts/tampermonkey/revive_request_endpoint.json';
+    const RX_DEFAULT_URLS = ['http://127.0.0.1:8765', 'http://localhost:8765'];
+    const RX_DISCOVERY_CACHE_KEY = 'bfc_rx_discovery';
+    const RX_DISCOVERY_TTL_MS = 6 * 3600 * 1000;
+    const RX_KEY_RX = /^[A-Za-z0-9:_-]{1,80}$/;
+    const RX_ERRORS = {
+        too_many_reactions: 'you can add up to 8 different emoji per message',
+        invalid_emoji: "that emoji isn't supported",
+        invalid_message_key: "this message can't be reacted to yet",
+        user_id_required: "BFC couldn't work out your Torn ID",
+    };
+
+    const rxStore = new Map();     // message key -> [{ emoji, count, users: [{ id, name }] }]
+    const rxMsgEls = new Map();    // message key -> rendered message element
+    const rxFetched = new Set();
+    const rx = { base: '', resolving: null, failures: 0, retryAt: 0, timer: null, quickTimer: null, inflight: false, status: 'Not connected yet' };
+    let chatSelfId = '';
+
+    // Reaction alerts compare how many *other* members reacted to your message against a
+    // persisted baseline, so reloads and scrolling never re-alert and your own reactions never alert.
+    const REACTION_STORE_KEY = 'bfc_reaction_baselines';
+    let reactionBaselines = {};
+    try {
+        const raw = window.localStorage && window.localStorage.getItem(REACTION_STORE_KEY);
+        const parsed = raw ? JSON.parse(raw) : null;
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) reactionBaselines = parsed;
+    } catch (e) {}
+    let reactionSaveTimer = null;
+
+    function saveReactionBaselines() {
+        if (reactionSaveTimer) return;
+        reactionSaveTimer = setTimeout(() => {
+            reactionSaveTimer = null;
+            const keys = Object.keys(reactionBaselines);
+            if (keys.length > 300) keys.slice(0, keys.length - 300).forEach(k => delete reactionBaselines[k]);
+            try { window.localStorage && window.localStorage.setItem(REACTION_STORE_KEY, JSON.stringify(reactionBaselines)); } catch (e) {}
+        }, 1000);
+    }
+
+    function trimSlash(url) { return String(url || '').trim().replace(/\/+$/, ''); }
+    function isHttpUrl(url) { return /^https?:\/\/[^\s]+$/i.test(url); }
+
+    function rxHttp(method, url, body) {
+        const data = body ? JSON.stringify(body) : undefined;
+        const headers = data ? { 'Content-Type': 'application/json' } : {};
+        const parse = (status, text) => {
+            let json = null;
+            try { json = JSON.parse(text); } catch (e) {}
+            if (status < 200 || status >= 300 || !json) throw new Error((json && json.error) || `HTTP ${status || 'error'}`);
+            return json;
+        };
+        if (typeof GM_xmlhttpRequest === 'function') {
+            return new Promise((resolve, reject) => {
+                GM_xmlhttpRequest({
+                    method, url, data, headers, timeout: 8000,
+                    onload: r => { try { resolve(parse(r.status, r.responseText)); } catch (e) { reject(e); } },
+                    onerror: () => reject(new Error('network error')),
+                    ontimeout: () => reject(new Error('timed out')),
+                });
+            });
+        }
+        if (method === 'POST' && typeof PDA_httpPost === 'function') {
+            return withRequestTimeout(PDA_httpPost(url, headers, data)).then(r => parse(Number(r.status), r.responseText));
+        }
+        if (method === 'GET' && typeof PDA_httpGet === 'function') {
+            return withRequestTimeout(PDA_httpGet(url, {})).then(r => parse(Number(r.status), r.responseText));
+        }
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 8000);
+        return fetch(url, { method, body: data, headers, signal: controller.signal })
+            .then(async r => parse(r.status, await r.text()))
+            .finally(() => clearTimeout(timer));
+    }
+
+    async function rxDiscover(force) {
+        let cached = null;
+        try { cached = JSON.parse(window.localStorage.getItem(RX_DISCOVERY_CACHE_KEY) || 'null'); } catch (e) {}
+        const cachedUrls = cached && Array.isArray(cached.urls) ? cached.urls : [];
+        if (!force && cachedUrls.length && Date.now() - cached.at < RX_DISCOVERY_TTL_MS) return cachedUrls;
+        try {
+            const res = await rxHttp('GET', `${RX_DISCOVERY_URL}?t=${Math.floor(Date.now() / 60000)}`);
+            const urls = [...(Array.isArray(res.base_urls) ? res.base_urls : []), res.base_url].map(trimSlash).filter(isHttpUrl);
+            try { window.localStorage.setItem(RX_DISCOVERY_CACHE_KEY, JSON.stringify({ urls, at: Date.now() })); } catch (e) {}
+            return urls;
+        } catch (e) {
+            return cachedUrls;
+        }
+    }
+
+    async function rxResolveBase(force, overrideUrl) {
+        if (rx.base && !force) return rx.base;
+        if (!rx.resolving) {
+            rx.resolving = (async () => {
+                const tryAll = async urls => {
+                    for (const url of new Set(urls.map(trimSlash))) {
+                        if (!isHttpUrl(url)) continue;
+                        try { if ((await rxHttp('GET', url + '/health')).ok) return url; } catch (e) {}
+                    }
+                    return '';
+                };
+                const override = trimSlash(overrideUrl !== undefined ? overrideUrl : CFG.reactionServer);
+                if (override) return tryAll([override]);
+                return (await tryAll([...(await rxDiscover(false)), ...RX_DEFAULT_URLS])) || tryAll(await rxDiscover(true));
+            })().finally(() => { rx.resolving = null; });
+        }
+        rx.base = await rx.resolving;
+        if (!rx.base) throw new Error('reaction server unreachable');
+        return rx.base;
+    }
+
+    // `userAction` skips the offline back-off so a click always retries immediately.
+    async function rxCall(path, body, userAction) {
+        if (!userAction && Date.now() < rx.retryAt) throw new Error(rx.status);
+        try {
+            const base = await rxResolveBase(false);
+            const res = await rxHttp('POST', base + path, body);
+            rx.failures = 0;
+            rx.retryAt = 0;
+            rx.status = 'Connected to ' + base.replace(/^https?:\/\//, '');
+            return res;
+        } catch (e) {
+            if (RX_ERRORS[e.message] || e.message === 'keys_required') throw e;
+            rx.base = '';
+            rx.failures++;
+            rx.retryAt = Date.now() + Math.min(300000, 15000 * 2 ** Math.min(rx.failures - 1, 5));
+            rx.status = `Reaction server offline (${e.message})`;
+            throw new Error(rx.status);
+        }
+    }
+
+    function myIdentity() {
+        let id = String(CFG.userId || ''), name = CFG.username || '';
+        if (!id) {
+            try {
+                const input = document.getElementById('torn-user');
+                const user = input && JSON.parse(input.value);
+                if (user && user.id) { id = String(user.id); name = name || user.playername || ''; }
+            } catch (e) {}
+        }
+        if (!id && name) id = String(nameIndex[name.toLowerCase()] || '');
+        return { id: id || chatSelfId, name };
+    }
+
+    // Torn's message component carries a stable `id`; the sender link id ("<id>:<userId>") is the fallback.
+    function messageKey(msgEl) {
+        const data = messageData(msgEl);
+        if (data && data.pending) return null;
+        let key = data && data.id != null ? String(data.id) : '';
+        let author = data && data.userId != null ? String(data.userId) : '';
+        if (data && data.self === true && author) chatSelfId = author;
+        if (!key) {
+            const link = msgEl.querySelector('a[id*=":"][href*="XID="]');
+            if (link) {
+                const parts = link.id.split(':');
+                key = parts[0];
+                author = author || parts[1] || '';
+            }
+        }
+        return RX_KEY_RX.test(key) ? { key, author } : null;
+    }
+
+    function assignMsgKey(msgEl) {
+        const mk = messageKey(msgEl);
+        const key = mk ? mk.key : '';
+        if ((msgEl.dataset.bfcKey || '') === key) return;
+        msgEl.dataset.bfcKey = key;
+        msgEl.dataset.bfcAuthor = mk ? mk.author : '';
+        const row = msgEl.querySelector(':scope > .bfc-rx-row');
+        if (row) row.remove();
+        if (key && !rxFetched.has(key)) queueReactionFetch();
+    }
+
+    function rxUserIsMe(user, me) { return Boolean(me) && String(user.id) === me; }
+
+    function rxWhoText(group) {
+        const names = group.users.map(u => u.name || `#${u.id}`);
+        return names.slice(0, 15).join(', ') + (names.length > 15 ? ` +${names.length - 15} more` : '');
+    }
+
+    function renderReactions(msgEl) {
+        const key = msgEl.dataset.bfcKey;
+        let row = msgEl.querySelector(':scope > .bfc-rx-row');
+        const list = key && CFG.reactionsEnabled ? (rxStore.get(key) || []) : [];
+        if (key) rxMsgEls.set(key, msgEl);
+        const me = myIdentity().id;
+        const sig = list.map(g => `${g.emoji}:${g.count}${g.users.some(u => rxUserIsMe(u, me)) ? '*' : ''}`).join(',');
+        if (!list.length) {
+            if (row) row.remove();
+            msgEl.classList.remove('bfc-has-rx');
+            return;
+        }
+        if (row && row.dataset.sig === sig) return;
+        if (!row) {
+            row = document.createElement('div');
+            row.className = 'bfc-rx-row';
+            msgEl.appendChild(row);
+        }
+        row.dataset.sig = sig;
+        row.textContent = '';
+        list.forEach(group => {
+            const chip = document.createElement('button');
+            chip.type = 'button';
+            chip.className = 'bfc-rx-chip' + (group.users.some(u => rxUserIsMe(u, me)) ? ' bfc-rx-mine' : '');
+            chip.textContent = `${group.emoji} ${group.count}`;
+            chip.title = rxWhoText(group);
+            chip.addEventListener('click', e => {
+                e.preventDefault();
+                e.stopPropagation();
+                toggleReaction(msgEl, group.emoji, chip);
+            });
+            row.appendChild(chip);
+        });
+        msgEl.classList.add('bfc-has-rx');
+    }
+
+    function checkReactionAlert(msgEl, key) {
+        if (msgEl.dataset.bfcOwn !== '1') return;
+        const me = myIdentity().id;
+        const list = rxStore.get(key) || [];
+        const fromOthers = list.filter(g => g.users.some(u => !rxUserIsMe(u, me)));
+        const others = fromOthers.reduce((sum, g) => sum + g.users.filter(u => !rxUserIsMe(u, me)).length, 0);
+        const prev = reactionBaselines[key];
+        if (prev === others) return;
+        delete reactionBaselines[key];
+        reactionBaselines[key] = others;
+        saveReactionBaselines();
+        if (prev === undefined || others <= prev || !CFG.reactionNotify) return;
+
+        const fp = msgEl.dataset.bfcFp || key;
+        const emoji = fromOthers.map(g => g.emoji).join(' ');
+        const existing = mentionStack.find(m => m.kind === 'reaction' && m.fp === fp);
+        if (existing) { existing.el = msgEl; existing.emoji = emoji; }
+        else mentionStack.push({ fp, el: msgEl, kind: 'reaction', emoji });
+        msgEl.classList.add('bfc-reacted');
+        refreshBar();
+    }
+
+    function rxApply(keys, reactions) {
+        for (const key of keys) {
+            rxFetched.add(key);
+            rxStore.set(key, Array.isArray(reactions[key]) ? reactions[key] : []);
+            const el = rxMsgEls.get(key);
+            if (el && el.isConnected && el.dataset.bfcKey === key) {
+                renderReactions(el);
+                checkReactionAlert(el, key);
+            }
+        }
+        if (rxStore.size > 600) {
+            for (const key of rxStore.keys()) {
+                if (rxStore.size <= 450) break;
+                const el = rxMsgEls.get(key);
+                if (el && el.isConnected) continue;
+                rxStore.delete(key);
+                rxFetched.delete(key);
+                rxMsgEls.delete(key);
+            }
+        }
+    }
+
+    function rxVisibleKeys(onlyNew) {
+        const keys = [];
+        for (const [key, el] of rxMsgEls) {
+            if (!el.isConnected || el.dataset.bfcKey !== key) { rxMsgEls.delete(key); continue; }
+            if (!onlyNew || !rxFetched.has(key)) keys.push(key);
+        }
+        return keys.slice(-100);
+    }
+
+    function rxActive() {
+        return CFG.reactionsEnabled && !document.hidden && chatToolsAttached() && isFactionChatOpen(chatBoxEl);
+    }
+
+    async function rxFetch(onlyNew) {
+        if (rx.inflight || !rxActive()) return;
+        const keys = rxVisibleKeys(onlyNew);
+        if (!keys.length) return;
+        rx.inflight = true;
+        try {
+            const res = await rxCall('/chat-reactions/query', { keys });
+            rxApply(keys, res.reactions || {});
+        } catch (e) {
+            console.debug('[BFC] Reaction sync skipped:', e.message);
+        } finally {
+            rx.inflight = false;
+        }
+    }
+
+    // New/scrolled-in messages get their reactions quickly without waiting for the next poll.
+    function queueReactionFetch() {
+        if (rx.quickTimer || !CFG.reactionsEnabled) return;
+        rx.quickTimer = setTimeout(() => {
+            rx.quickTimer = null;
+            if (rx.inflight) queueReactionFetch();
+            else rxFetch(true);
+        }, 800);
+    }
+
+    function startReactionPolling() {
+        if (rx.timer) return;
+        const tick = () => {
+            rx.timer = setTimeout(tick, RX_POLL_MS);
+            rxFetch(false);
+        };
+        rx.timer = setTimeout(tick, 2000);
+    }
+
+    async function toggleReaction(msgEl, emoji, btn) {
+        const key = msgEl.dataset.bfcKey;
+        if (!key) return;
+        const me = myIdentity();
+        if (!me.id) {
+            showToast("BFC couldn't work out your Torn ID. Save your API key in BFC settings, then try again.");
+            return;
+        }
+        const before = rxStore.get(key) || [];
+        const list = before.map(g => Object.assign({}, g, { users: g.users.slice() }));
+        let group = list.find(g => g.emoji === emoji);
+        const active = !(group && group.users.some(u => rxUserIsMe(u, me.id)));
+        if (active) {
+            if (!group) { group = { emoji, count: 0, users: [] }; list.push(group); }
+            group.users.push({ id: Number(me.id), name: me.name });
+        } else {
+            group.users = group.users.filter(u => !rxUserIsMe(u, me.id));
+        }
+        list.forEach(g => { g.count = g.users.length; });
+        rxStore.set(key, list.filter(g => g.count > 0));
+        renderReactions(msgEl);
+
+        if (btn) btn.classList.add('bfc-qr-busy');
+        try {
+            const res = await rxCall('/chat-reactions/toggle', {
+                key, emoji, active,
+                user_id: Number(me.id),
+                user_name: me.name,
+                author_id: msgEl.dataset.bfcAuthor || null,
+            }, true);
+            rxApply([key], res.reactions || {});
+        } catch (e) {
+            rxStore.set(key, before);
+            renderReactions(msgEl);
+            showToast(`Reaction failed: ${RX_ERRORS[e.message] || e.message}`);
+        } finally {
+            if (btn) btn.classList.remove('bfc-qr-busy');
+            const bar = msgEl.querySelector(':scope > .bfc-qr');
+            if (bar) bar.classList.remove('bfc-open');
+        }
+    }
+
+    let toastTimer = null;
+    function showToast(message) {
+        let toast = document.getElementById('bfc-toast');
+        if (!toast) {
+            toast = document.createElement('div');
+            toast.id = 'bfc-toast';
+            document.body.appendChild(toast);
+        }
+        toast.textContent = '';
+        const span = document.createElement('span');
+        span.textContent = '⚠ ' + message;
+        const close = document.createElement('button');
+        close.type = 'button';
+        close.textContent = '✕';
+        close.addEventListener('click', () => toast.remove());
+        toast.append(span, close);
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => toast.remove(), 8000);
+    }
+
+    function injectQuickReact(msgEl) {
+        const existing = msgEl.querySelector(':scope > .bfc-qr');
+        if (!CFG.reactionsEnabled || !CFG.quickReactEnabled || !CFG.quickReactions.length || !msgEl.dataset.bfcKey) {
+            if (existing) existing.remove();
+            return;
+        }
+        if (existing) return;
+        const bar = document.createElement('div');
+        bar.className = 'bfc-qr';
+        CFG.quickReactions.forEach(emoji => {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'bfc-qr-btn';
+            b.textContent = emoji;
+            b.title = `React ${emoji}`;
+            b.addEventListener('click', e => {
+                e.preventDefault();
+                e.stopPropagation();
+                toggleReaction(msgEl, emoji, b);
+            });
+            bar.appendChild(b);
+        });
+        msgEl.appendChild(bar);
+
+        // Touch devices have no hover: tapping a message toggles its quick-react bar.
+        if (IS_TOUCH && !msgEl.dataset.bfcQrBound) {
+            msgEl.dataset.bfcQrBound = '1';
+            msgEl.addEventListener('click', e => {
+                if (e.target.closest('a, button, input, textarea, [role="button"], .bfc-qr, .bfc-rx-row')) return;
+                const own = msgEl.querySelector(':scope > .bfc-qr');
+                document.querySelectorAll('.bfc-qr.bfc-open').forEach(q => { if (q !== own) q.classList.remove('bfc-open'); });
+                if (own) own.classList.toggle('bfc-open');
+            });
+        }
     }
 
     let tagPopup = null;
@@ -1158,9 +1707,9 @@
         const term = searchInput ? searchInput.value.trim().toLowerCase() : '';
         if (!term) { updateSCount(); return; }
         searchHits = [];
-        processedMsgs.forEach(({ el, bodyText }) => {
+        processedMsgs.forEach(({ el, bodyText, fullText }) => {
             if (!el.isConnected) return;
-            if (bodyText.includes(term) || el.textContent.toLowerCase().includes(term)) {
+            if (bodyText.includes(term) || fullText.includes(term)) {
                 el.classList.add('bfc-s-match'); searchHits.push(el);
             }
         });
@@ -1270,9 +1819,8 @@
         try {
             const elements = [msgEl, ...msgEl.querySelectorAll('*')];
             for (let el of elements) {
-                const fiberKey = Object.keys(el).find(k => k.startsWith('__reactFiber$'));
-                if (!fiberKey) continue;
-                let node = el[fiberKey];
+                let node = fiberOf(el);
+                if (!node) continue;
                 for (let i = 0; i < 4; i++) {
                     if (!node) break;
                     const props = node.memoizedProps || node.pendingProps;
@@ -1321,10 +1869,29 @@
     }
 
     const killedTooltipIds = new Set();
+    const keptTooltipIds = new Set();
 
-    function hideTornTooltip(el) {
+    // Torn's message tooltip used to be timestamp-only (BFC shows its own); since the reactions
+    // update it can hold the reaction bar, so only hide tooltips that contain nothing but a time.
+    function isTimestampOnlyTooltip(tt) {
+        if (tt.querySelector('button, [role="button"], [role="menuitem"], img, svg, input, a')) return false;
+        const text = (tt.textContent || '').trim();
+        return text.length <= 40 && /\d{1,2}:\d{2}/.test(text) && !EMOJI_RX.test(text);
+    }
+
+    function hideTornTooltip(el, attempt) {
         const tId = el.getAttribute('aria-describedby');
-        if (!tId || killedTooltipIds.has(tId)) return;
+        if (!tId || killedTooltipIds.has(tId) || keptTooltipIds.has(tId)) return;
+        const tt = document.getElementById(tId);
+        if (!tt || !tt.childElementCount && !tt.textContent.trim()) {
+            if ((attempt || 0) < 5) setTimeout(() => hideTornTooltip(el, (attempt || 0) + 1), 60);
+            return;
+        }
+        if (!isTimestampOnlyTooltip(tt)) {
+            keptTooltipIds.add(tId);
+            el.dataset.ttKept = tId;
+            return;
+        }
         killedTooltipIds.add(tId);
         el.dataset.ttHidden = tId;
         try {
@@ -1334,6 +1901,8 @@
 
     function isOwnMessage(msgEl, lcName) {
         if (CFG.username && lcName === CFG.username.toLowerCase()) return true;
+        const data = messageData(msgEl);
+        if (data && typeof data.self === 'boolean') return data.self;
         const box = msgEl.matches('[class*="box__"]') ? msgEl : msgEl.querySelector('[class*="box__"]');
         const cls = box ? (box.getAttribute('class') || '') : '';
         return cls.includes('local') || cls.includes('right');
@@ -1353,6 +1922,7 @@
         }
         if (CFG.showTimestamps) injectTs(msgEl);
         injectCopy(msgEl);
+        injectQuickReact(msgEl);
         if (msgEl.dataset.bfcMentioned === '1' && !msgEl.classList.contains('bfc-mentioned')) {
             msgEl.classList.add('bfc-mentioned');
         }
@@ -1361,7 +1931,9 @@
     // Returns true the first time an element is processed.
     function processMsg(msgEl) {
         if (msgEl.dataset.bfcDone) {
+            assignMsgKey(msgEl);
             decorateMsg(msgEl);
+            renderReactions(msgEl);
             return false;
         }
         msgEl.dataset.bfcDone = '1';
@@ -1372,17 +1944,23 @@
         const bodyEl = findBodyEl(msgEl);
         if (bodyEl) protectNode(bodyEl);
 
+        assignMsgKey(msgEl);
         decorateMsg(msgEl);
         hideTornTooltip(msgEl);
 
         const fp = getMsgFingerprint(msgEl);
         const isNew = !processedMsgFps.has(fp);
         if (isNew) rememberMsgFp(fp);
+        msgEl.dataset.bfcFp = fp;
+        const lcName = nameEl ? nameEl.textContent.trim().replace(/[:\s]+$/, '').toLowerCase() : '';
+        msgEl.dataset.bfcOwn = isOwnMessage(msgEl, lcName) ? '1' : '0';
 
-        checkMention(msgEl, fp, isNew);
+        const fullText = messageText(msgEl, msgEl, true);
+        checkMention(msgEl, fp, isNew, fullText);
+        renderReactions(msgEl);
 
-        const bodyText = (bodyEl || msgEl).textContent.toLowerCase();
-        processedMsgs.push({ el: msgEl, bodyText });
+        const bodyText = messageText(bodyEl || msgEl, msgEl, true).toLowerCase();
+        processedMsgs.push({ el: msgEl, bodyText, fullText: fullText.toLowerCase() });
         return true;
     }
 
@@ -1454,7 +2032,7 @@
         btn.innerHTML = IC;
         btn.addEventListener('click', e => {
             e.stopPropagation();
-            navigator.clipboard?.writeText(body.textContent.trim()).catch(() => {});
+            navigator.clipboard?.writeText(messageText(body, msgEl, true).trim()).catch(() => {});
             btn.innerHTML = IK;
             setTimeout(() => { btn.innerHTML = IC; }, 1400);
         });
@@ -1749,6 +2327,31 @@
                 <p class="bfc-mention-note">Only detects mentions while faction chat is open. Deduplication prevents re-triggers on scroll or chat reopen.</p>
 
                 <hr class="bfc-div">
+                <span class="bfc-slbl">Reactions</span>
+                <div class="bfc-row">
+                    <span>💬 Show &amp; sync reactions</span>
+                    <label class="bfc-sw"><input type="checkbox" id="s-rxon"${CFG.reactionsEnabled?' checked':''}><span class="bfc-swt"></span></label>
+                </div>
+                <div class="bfc-row">
+                    <span>😀 Quick-react buttons on messages</span>
+                    <label class="bfc-sw"><input type="checkbox" id="s-qr"${CFG.quickReactEnabled?' checked':''}><span class="bfc-swt"></span></label>
+                </div>
+                <div class="bfc-fld">
+                    <label class="bfc-lbl">Quick-react emoji (space separated, max 6)</label>
+                    <input class="bfc-inp" type="text" id="s-qre" value="${esc(CFG.quickReactions.join(' '))}">
+                </div>
+                <div class="bfc-row">
+                    <span>🔔 Notify when someone reacts to my message</span>
+                    <label class="bfc-sw"><input type="checkbox" id="s-rxn"${CFG.reactionNotify?' checked':''}><span class="bfc-swt"></span></label>
+                </div>
+                <div class="bfc-fld">
+                    <label class="bfc-lbl">Reaction server URL (blank = auto-detect Torn-Intel)</label>
+                    <input class="bfc-inp" type="text" id="s-rxurl" placeholder="auto" value="${esc(CFG.reactionServer || '')}">
+                </div>
+                <button type="button" class="bfc-tb-btn" id="bfc-rx-test" style="width:100%;margin-top:4px;">🔌 Test reaction server</button>
+                <p class="bfc-mention-note" id="bfc-rx-status">Torn chat has no reactions of its own, so BFC syncs them through the Torn-Intel server. Only members running BFC see them. ${IS_TORN_PDA ? 'Tap a message to show its quick-react bar' : 'Hover a message to show its quick-react bar'}; click a reaction chip to add/remove yours, and ${IS_TORN_PDA ? 'long-press' : 'hover'} it to see who reacted.</p>
+
+                <hr class="bfc-div">
                 <span class="bfc-slbl">Officer Group</span>
                 <p class="bfc-mention-note">Choose which faction members are included when you use <strong>@officers</strong>. Leaders remain based on Torn faction positions.</p>
                 <div id="bfc-officer-list"><div style="padding:8px;color:#6e7681;font-size:11px">Loading faction members…</div></div>
@@ -1825,6 +2428,7 @@
                        || unwrap(await apiFetchWithKey('/user/?selections=basic', key), 'basic');
                 if (!d || !d.name) throw new Error('Invalid key or no access');
                 CFG.username = d.name;
+                CFG.userId = String(d.id ?? d.player_id ?? CFG.userId ?? '');
                 document.getElementById('bfc-disp-user').textContent = d.name;
                 saveCfg(CFG);
                 setMsg(`✓ Connected as: ${d.name}`, true);
@@ -1833,6 +2437,23 @@
                 setMsg(`✗ ${e.message}`, false);
                 btn.textContent = '🔑 Test Key & Auto-detect Username';
             }
+        });
+
+        document.getElementById('bfc-rx-test').addEventListener('click', async e => {
+            const b = e.currentTarget;
+            const status = document.getElementById('bfc-rx-status');
+            b.textContent = '⏳ Testing…';
+            try {
+                const base = await rxResolveBase(true, document.getElementById('s-rxurl').value);
+                rx.failures = 0;
+                rx.retryAt = 0;
+                status.textContent = `✓ Reaction server reachable: ${base}`;
+                status.style.color = '#00e676';
+            } catch (err) {
+                status.textContent = '✗ Reaction server unreachable. Is the Torn-Intel listener running and its tunnel URL published?';
+                status.style.color = CFG.mentionColor;
+            }
+            b.textContent = '🔌 Test reaction server';
         });
 
         document.getElementById('bfc-save-btn').addEventListener('click', () => {
@@ -1844,6 +2465,17 @@
             CFG.showRankIcons   = document.getElementById('s-rank').checked;
             CFG.autoScroll      = document.getElementById('s-asc').checked;
             CFG.hideGearBtn     = document.getElementById('s-hide').checked;
+            CFG.quickReactEnabled = document.getElementById('s-qr').checked;
+            CFG.quickReactions  = parseQuickReactions(document.getElementById('s-qre').value, DEFAULTS.quickReactions);
+            CFG.reactionNotify  = document.getElementById('s-rxn').checked;
+            CFG.reactionsEnabled = document.getElementById('s-rxon').checked;
+            const rxServer = trimSlash(document.getElementById('s-rxurl').value);
+            if (rxServer !== CFG.reactionServer) { rx.base = ''; rx.failures = 0; rx.retryAt = 0; }
+            CFG.reactionServer  = rxServer;
+            document.getElementById('s-qre').value = CFG.quickReactions.join(' ');
+            document.querySelectorAll('.bfc-qr').forEach(n => n.remove());
+            document.querySelectorAll('.bfc-msg-container').forEach(el => { injectQuickReact(el); renderReactions(el); });
+            if (CFG.reactionsEnabled) rxFetch(false);
             CFG.officerIds       = Array.from(officerDraftIds);
             CFG.statusColors.online  = document.getElementById('s-con').value;
             CFG.statusColors.idle    = document.getElementById('s-cid').value;
@@ -1912,6 +2544,7 @@
         if (CFG.apiKey) fetchMyUsername();
         buildSettingsPanel();
         runScanner();
+        startReactionPolling();
 
         document.addEventListener('visibilitychange', () => {
             if (document.hidden) return;

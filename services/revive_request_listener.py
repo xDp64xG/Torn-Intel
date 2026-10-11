@@ -13,6 +13,7 @@ from urllib.parse import parse_qs, urlparse
 
 from modules.revives.sync import ReviveSync
 from repositories.bank_request_repository import BankRequestRepository
+from repositories.chat_reaction_repository import ChatReactionRepository
 from repositories.revive_request_repository import ReviveRequestRepository
 from services.bank_balance import resolve_withdrawal
 from services.revive_operations import ReviveOperations, revive_payment_text
@@ -43,6 +44,7 @@ class ReviveRequestListener:
         self.services = services
         self.repo = ReviveRequestRepository(services.database)
         self.bank_repo = BankRequestRepository(services.database)
+        self.reaction_repo = ChatReactionRepository(services.database)
 
     #######################################################
 
@@ -56,6 +58,7 @@ class ReviveRequestListener:
         services = self.services
         repo = self.repo
         bank_repo = self.bank_repo
+        reaction_repo = self.reaction_repo
         syncer = ReviveSync(self.services)
         revive_operations = ReviveOperations(services.settings.database_path, services.gateway)
         notification_condition = threading.Condition()
@@ -301,7 +304,7 @@ class ReviveRequestListener:
                 return
 
             def do_POST(self):
-                if self.path not in ("/revive-request", "/bank-request"):
+                if self.path not in ("/revive-request", "/bank-request", "/chat-reactions/query", "/chat-reactions/toggle"):
                     self._send_json(404, {"ok": False, "error": "not_found"})
                     return
 
@@ -312,6 +315,10 @@ class ReviveRequestListener:
                     payload = json.loads(raw.decode("utf-8"))
                 except Exception:
                     self._send_json(400, {"ok": False, "error": "invalid_json"})
+                    return
+
+                if self.path.startswith("/chat-reactions/"):
+                    self._handle_chat_reactions(self.path, payload if isinstance(payload, dict) else {})
                     return
 
                 if self.path == "/bank-request":
@@ -374,6 +381,31 @@ class ReviveRequestListener:
                     self._send_json(400, {"ok": False, "error": str(exc)})
                 except Exception as exc:
                     logger.error(f"Revive listener error: {type(exc).__name__}: {exc}")
+                    self._send_json(500, {"ok": False, "error": "internal_error"})
+
+            # Polled by BFC every ~15s per open chat, so successful calls are intentionally not logged.
+            def _handle_chat_reactions(self, path, payload):
+                try:
+                    if path == "/chat-reactions/query":
+                        keys = payload.get("keys")
+                        if not isinstance(keys, list):
+                            raise ValueError("keys_required")
+                        self._send_json(200, {"ok": True, "reactions": reaction_repo.for_messages(keys)})
+                        return
+                    key = payload.get("key")
+                    active = reaction_repo.toggle(
+                        key,
+                        payload.get("emoji"),
+                        payload.get("user_id"),
+                        user_name=payload.get("user_name"),
+                        author_id=payload.get("author_id"),
+                        active=payload.get("active"),
+                    )
+                    self._send_json(200, {"ok": True, "active": active, "reactions": reaction_repo.for_messages([key])})
+                except ValueError as exc:
+                    self._send_json(400, {"ok": False, "error": str(exc)})
+                except Exception as exc:
+                    logger.error(f"Chat reaction error: {type(exc).__name__}: {exc}")
                     self._send_json(500, {"ok": False, "error": "internal_error"})
 
             def _handle_bank_request(self, payload):
