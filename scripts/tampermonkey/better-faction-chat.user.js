@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Faction Chat – Torn.com (Desktop + Torn PDA)
 // @namespace    https://torn.com/
-// @version      2.1.1
+// @version      2.1.2
 // @description  Desktop and Torn PDA faction chat tools: status, group tags, officer groups, search, timestamps, reactions and touch-friendly controls
 // @author       sercann
 // @match        https://www.torn.com/*
@@ -25,7 +25,7 @@
 (function () {
     'use strict';
 
-    const BFC_VERSION = '2.1.1';
+    const BFC_VERSION = '2.1.2';
     const STORE_KEY   = 'bfc_settings_v2';
     const API_BASE    = 'https://api.torn.com';
     const PDA_KEY     = '###PDA-APIKEY###';
@@ -45,6 +45,7 @@
         autoScroll:       true,
         mentionEnabled:   true,
         hideGearBtn:      false,
+        replyButton:      IS_TORN_PDA,
         quickReactEnabled: true,
         quickReactions:   ['👍', '😂', '❤️', '🔥'],
         reactionNotify:   true,
@@ -69,28 +70,35 @@
     }
 
     function loadCfg() {
-        let raw = null;
-
-        // Torn PDA's GM storage implementation can be asynchronous or unavailable.
-        // localStorage is synchronous and works consistently in both Torn PDA and desktop.
-        try { if (typeof window.localStorage !== 'undefined') raw = window.localStorage.getItem(STORE_KEY); } catch(e) {}
+        // Settings are mirrored to localStorage, GM storage and a cookie because Torn PDA's
+        // storage can be unreliable. A write can fail silently on one of them (e.g. a full
+        // localStorage), so read all three and keep the most recently saved copy.
+        const raws = [];
+        try { if (typeof window.localStorage !== 'undefined') raws.push(window.localStorage.getItem(STORE_KEY)); } catch(e) {}
         try {
-            if (!raw && typeof GM_getValue === 'function') {
+            if (typeof GM_getValue === 'function') {
                 const value = GM_getValue(STORE_KEY, null);
-                if (typeof value === 'string') raw = value;
+                if (typeof value === 'string') raws.push(value);
             }
         } catch(e) {}
         try {
-            if (!raw) {
-                const match = document.cookie.match(new RegExp('(^| )' + STORE_KEY + '=([^;]+)'));
-                if (match) raw = decodeURIComponent(match[2]);
-            }
+            const match = document.cookie.match(new RegExp('(^| )' + STORE_KEY + '=([^;]+)'));
+            if (match) raws.push(decodeURIComponent(match[2]));
         } catch(e) {}
 
-        if (!raw) return Object.assign({}, DEFAULTS);
+        let saved = null;
+        for (const raw of raws) {
+            if (!raw) continue;
+            try {
+                const parsed = JSON.parse(raw);
+                if (!parsed || typeof parsed !== 'object') continue;
+                if (!saved || (Number(parsed.savedAt) || 0) > (Number(saved.savedAt) || 0)) saved = parsed;
+            } catch(e) {}
+        }
+
+        if (!saved) return Object.assign({}, DEFAULTS);
 
         try {
-            const saved = JSON.parse(raw);
             return Object.assign({}, DEFAULTS, saved, {
                 statusColors: Object.assign({}, DEFAULTS.statusColors, saved.statusColors || {}),
                 officerIds: Array.isArray(saved.officerIds) ? saved.officerIds.map(String) : [],
@@ -102,6 +110,7 @@
     }
 
     function saveCfg(c) {
+        c.savedAt = Date.now();
         const raw = JSON.stringify(c);
         try { if (typeof window.localStorage !== 'undefined') window.localStorage.setItem(STORE_KEY, raw); } catch(e) {}
         try { if (typeof GM_setValue === 'function') GM_setValue(STORE_KEY, raw); } catch(e) {}
@@ -322,11 +331,11 @@
             .bfc-swt::before { width:20px; height:20px; }
             .bfc-sw input:checked+.bfc-swt::before { transform:translateX(18px); }
             .bfc-inp, .bfc-inp-num, #bfc-save-btn, #bfc-test-btn { min-height:42px; font-size:16px; }
-            .bfc-cp-btn { display:inline-flex; width:30px; height:30px; }
-            .bfc-qr { right:36px; }
-            .bfc-qr-btn { font-size:18px; padding:5px 6px; touch-action:manipulation; }
-            .bfc-rx-chip { font-size:13px; padding:4px 9px; touch-action:manipulation; }
-            .bfc-msg-container { padding-right:36px!important; }
+            .bfc-cp-btn { display:inline-flex; width:24px; height:24px; }
+            .bfc-qr { right:30px; }
+            .bfc-qr-btn { font-size:15px; padding:3px 4px; touch-action:manipulation; }
+            .bfc-rx-chip { font-size:12px; padding:2px 7px; touch-action:manipulation; }
+            .bfc-msg-container { padding-right:30px!important; }
         }
     `);
 
@@ -580,10 +589,23 @@
         return inner && typeof inner === 'object' && !Array.isArray(inner) ? inner : d;
     }
 
+    // v2 /user/basic returns { profile: { id, name, ... } }; v1 returns { player_id, name, ... }.
+    function userBasic(d) {
+        if (!d) return null;
+        const p = (d.profile && typeof d.profile === 'object') ? d.profile : unwrap(d, 'basic');
+        return p && p.name ? p : null;
+    }
+
+    async function fetchUserBasic(key) {
+        return userBasic(await apiFetchWithKey('/v2/user/basic', key))
+            || userBasic(await apiFetchWithKey('/user/?selections=basic', key));
+    }
+
     async function fetchMyUsername() {
         if (!CFG.apiKey || (CFG.username && CFG.userId)) return;
-        const d = unwrap(await apiFetch('/v2/user/basic'), 'basic') || unwrap(await apiFetch('/user/?selections=basic'), 'basic');
-        if (d && d.name) {
+        const d = await fetchUserBasic(CFG.apiKey);
+        if (d) {
+            lastApiError = '';
             CFG.username = d.name;
             CFG.userId = String(d.id ?? d.player_id ?? CFG.userId ?? '');
             saveCfg(CFG);
@@ -2021,11 +2043,29 @@
     }
 
     function injectCopy(msgEl) {
-        if (msgEl.querySelector('.bfc-cp-btn')) return;
+        const wantReply = Boolean(CFG.replyButton);
+        const existing = msgEl.querySelector('.bfc-cp-btn');
+        if (existing) {
+            if (existing.classList.contains('bfc-reply-btn') === wantReply) return;
+            existing.remove();
+        }
         const body = findBodyEl(msgEl);
         if (!body) return;
 
         const btn = document.createElement('button');
+        btn.type = 'button';
+        if (wantReply) {
+            btn.className = 'bfc-cp-btn bfc-reply-btn'; btn.title = 'Reply to this message';
+            btn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M10 9V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11z"/></svg>';
+            btn.addEventListener('click', e => {
+                e.preventDefault();
+                e.stopPropagation();
+                replyToMessage(msgEl, body);
+            });
+            body.appendChild(btn);
+            return;
+        }
+
         btn.className = 'bfc-cp-btn'; btn.title = 'Copy message text';
         const IC = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
         const IK = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#00e676" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>';
@@ -2038,6 +2078,27 @@
         });
 
         body.appendChild(btn);
+    }
+
+    const REPLY_PREFIX_RX = /^(?:\s*↪\s*@[^\s\[]+\s*\[[^\]]*\]\s*)+/u;
+
+    // Puts "↪ @Name [HH:MM quoted text] " at the start of the chat box (replacing any earlier reply prefix).
+    function replyToMessage(msgEl, body) {
+        const input = chatBoxEl && chatBoxEl.querySelector('textarea');
+        if (!input) { updatePill('Open faction chat first', true); return; }
+        const name = (findNameEl(msgEl)?.textContent || '').trim().replace(/[:\s]+$/, '');
+        if (!name) return;
+        const time = msgEl.dataset.bfcTime || getMsgTimestamp(msgEl) || '';
+        let quote = messageText(body, msgEl, true).replace(REPLY_PREFIX_RX, '').replace(/[\[\]]/g, '').replace(/\s+/g, ' ').trim();
+        if (quote.length > 60) quote = quote.slice(0, 57).trimEnd() + '…';
+        const prefix = `↪ @${name} [${[time, quote].filter(Boolean).join(' ')}] `;
+        const rest = (input.value || '').replace(REPLY_PREFIX_RX, '');
+        const newVal = prefix + rest;
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
+        if (setter) setter.call(input, newVal); else input.value = newVal;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.focus();
+        input.setSelectionRange(newVal.length, newVal.length);
     }
 
     let gearBtn = null;
@@ -2374,6 +2435,10 @@
                     <span>⏬ Auto-scroll to newest message</span>
                     <label class="bfc-sw"><input type="checkbox" id="s-asc"${CFG.autoScroll?' checked':''}><span class="bfc-swt"></span></label>
                 </div>
+                <div class="bfc-row">
+                    <span>↪ Reply button (replaces copy button)</span>
+                    <label class="bfc-sw"><input type="checkbox" id="s-reply"${CFG.replyButton?' checked':''}><span class="bfc-swt"></span></label>
+                </div>
 
                 <hr class="bfc-div">
                 <span class="bfc-slbl">Interface</span>
@@ -2424,13 +2489,15 @@
             const btn = document.getElementById('bfc-test-btn');
             btn.textContent = '⏳ Testing…';
             try {
-                const d = unwrap(await apiFetchWithKey('/v2/user/basic', key), 'basic')
-                       || unwrap(await apiFetchWithKey('/user/?selections=basic', key), 'basic');
-                if (!d || !d.name) throw new Error('Invalid key or no access');
+                const d = await fetchUserBasic(key);
+                if (!d) throw new Error(lastApiError || 'Invalid key or no access');
+                const keyChanged = CFG.apiKey !== key;
+                CFG.apiKey = key;
                 CFG.username = d.name;
                 CFG.userId = String(d.id ?? d.player_id ?? CFG.userId ?? '');
                 document.getElementById('bfc-disp-user').textContent = d.name;
                 saveCfg(CFG);
+                if (keyChanged) startPoll();
                 setMsg(`✓ Connected as: ${d.name}`, true);
                 btn.textContent = '✓ Key valid';
             } catch(e) {
@@ -2465,6 +2532,7 @@
             CFG.showRankIcons   = document.getElementById('s-rank').checked;
             CFG.autoScroll      = document.getElementById('s-asc').checked;
             CFG.hideGearBtn     = document.getElementById('s-hide').checked;
+            CFG.replyButton     = document.getElementById('s-reply').checked;
             CFG.quickReactEnabled = document.getElementById('s-qr').checked;
             CFG.quickReactions  = parseQuickReactions(document.getElementById('s-qre').value, DEFAULTS.quickReactions);
             CFG.reactionNotify  = document.getElementById('s-rxn').checked;
@@ -2474,7 +2542,7 @@
             CFG.reactionServer  = rxServer;
             document.getElementById('s-qre').value = CFG.quickReactions.join(' ');
             document.querySelectorAll('.bfc-qr').forEach(n => n.remove());
-            document.querySelectorAll('.bfc-msg-container').forEach(el => { injectQuickReact(el); renderReactions(el); });
+            document.querySelectorAll('.bfc-msg-container').forEach(el => { injectCopy(el); injectQuickReact(el); renderReactions(el); });
             if (CFG.reactionsEnabled) rxFetch(false);
             CFG.officerIds       = Array.from(officerDraftIds);
             CFG.statusColors.online  = document.getElementById('s-con').value;

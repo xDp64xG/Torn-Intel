@@ -10,7 +10,17 @@ import discord
 from discord import app_commands
 
 from repositories.faction_watch_repository import FactionWatchRepository
-from services.faction_watchers import ChainWatchConfig, RetalTracker, evaluate_chain
+from services.faction_watchers import CHAIN_BROKEN, ChainWatchConfig, RetalTracker, evaluate_chain
+
+
+def format_duration(seconds):
+    hours, remainder = divmod(int(seconds), 3600)
+    minutes, secs = divmod(remainder, 60)
+    parts = [f"{hours}h"] if hours else []
+    if hours or minutes:
+        parts.append(f"{minutes}m")
+    parts.append(f"{secs}s")
+    return " ".join(parts)
 
 
 class DiscordFactionWatchers:
@@ -218,16 +228,30 @@ class DiscordFactionWatchers:
         if stage is not None:
             channel = await self.channel(int(channel_id))
             chain = payload["chain"]
-            labels = {1: "Warning", 2: "Urgent", 3: "Final warning"}
-            embed = discord.Embed(
-                title=f"[{tag}] Chain Saver - {labels[stage]}",
-                description=(
-                    f"Chain: **{int(chain['current']):,} hits**\n"
-                    f"Time remaining: **{int(chain['timeout'])} seconds**\n"
-                    f"[Open faction](https://www.torn.com/factions.php?step=profile&ID={faction.faction_id})"
-                ),
-                color=0xe74c3c if stage == 3 else 0xf1c40f,
-            )
+            faction_link = f"[Open faction](https://www.torn.com/factions.php?step=profile&ID={faction.faction_id})"
+            if stage == CHAIN_BROKEN:
+                cooldown = int(chain.get("cooldown") or 0)
+                hits = int(state.get("broken_hits") or 0)
+                embed = discord.Embed(
+                    title=f"[{tag}] Chain Saver - Chain broke",
+                    description=(
+                        (f"The chain broke at **{hits:,} hits**.\n" if hits else "The chain broke.\n")
+                        + f"Cooldown: **{format_duration(cooldown) if cooldown > 0 else 'none'}**\n"
+                        + faction_link
+                    ),
+                    color=0x2c2f33,
+                )
+            else:
+                labels = {1: "Warning", 2: "Urgent", 3: "Final warning"}
+                embed = discord.Embed(
+                    title=f"[{tag}] Chain Saver - {labels[stage]}",
+                    description=(
+                        f"Chain: **{int(chain['current']):,} hits**\n"
+                        f"Time remaining: **{int(chain['timeout'])} seconds**\n"
+                        f"{faction_link}"
+                    ),
+                    color=0xe74c3c if stage == 3 else 0xf1c40f,
+                )
             role_id = self.get("chain_saver", tag, "role_id")
             role = channel.guild.get_role(int(role_id)) if role_id else None
             if role_id and role is None:

@@ -132,8 +132,17 @@ class ChainWatchConfig:
             raise ValueError("Use minimum >= 1 and 0 < final < urgent < warning < 300 seconds.")
 
 
+CHAIN_BROKEN = 4
+# Ignore warnings from a timer that expired long ago (e.g. the bot was offline) when detecting breaks.
+BREAK_REPORT_WINDOW = 600
+
+
 def evaluate_chain(payload, config, previous, now):
-    """Return (warning stage or None, durable next state, next poll delay)."""
+    """Return (alert stage or None, durable next state, next poll delay).
+
+    Stages 1-3 are warnings; CHAIN_BROKEN means a chain that already received a
+    warning has ended. The state keeps the last seen hit count for that alert.
+    """
     chain = _valid_response(payload, "chain")
     if not isinstance(chain, dict):
         raise ValueError("Torn response did not include a valid chain object.")
@@ -143,17 +152,31 @@ def evaluate_chain(payload, config, previous, now):
     current, timeout, start, cooldown = (int(chain[field]) for field in required)
     if min(current, timeout, start, cooldown) < 0:
         raise ValueError("Torn returned negative chain timer values.")
-    if current < config.minimum or timeout == 0 or cooldown > 0:
-        return None, {"start": start, "deadline": 0, "stage": 0}, 240
-    deadline = now + timeout
     previous = previous or {}
-    reset = start != previous.get("start") or deadline > previous.get("deadline", 0) + 5
+    was_warned = (
+        int(previous.get("stage", 0)) > 0
+        and int(previous.get("deadline", 0)) >= now - BREAK_REPORT_WINDOW
+    )
+    lost_hits = int(previous.get("current", 0))
+    if current < config.minimum or timeout == 0 or cooldown > 0:
+        state = {"start": start, "deadline": 0, "stage": 0}
+        if was_warned:
+            state["broken_hits"] = lost_hits
+            return CHAIN_BROKEN, state, 240
+        return None, state, 240
+    deadline = now + timeout
+    new_chain = start != previous.get("start")
+    reset = new_chain or deadline > previous.get("deadline", 0) + 5
     stage = 0 if reset else int(previous.get("stage", 0))
     thresholds = (config.warning, config.urgent, config.final)
     reached = sum(timeout < threshold for threshold in thresholds)
+    if new_chain and was_warned:
+        # The warned chain ended and a new one started between polls; report the break first.
+        state = {"start": start, "deadline": deadline, "stage": 0, "current": current, "broken_hits": lost_hits}
+        return CHAIN_BROKEN, state, 1
     warning = reached if reached > stage else None
     stage = max(stage, reached)
-    state = {"start": start, "deadline": deadline, "stage": stage}
+    state = {"start": start, "deadline": deadline, "stage": stage, "current": current}
     intervals = (240, 60, 30, 15)
     delay = intervals[stage]
     if stage < 3:

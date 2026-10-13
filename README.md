@@ -97,6 +97,34 @@ Or override directly:
 python main.py discord serve --token YOUR_TOKEN --prefix !ti --guild-id 123456789012345678
 ```
 
+Only one bot (`discord serve`) and one listener (`revive_listener serve`) can run
+per database. A second copy exits with "already running (PID ...)" instead of
+posting duplicate alerts. The lock files live next to the database. The lock
+can't see a copy on another machine that uses the same bot token, so stop any
+local test bot while the server copy is running.
+
+On the Linux server, run [`Reference/updater.py`](Reference/updater.py) inside
+tmux to keep the `developer` branch deployed:
+
+```bash
+tmux new -s Updater
+venv/bin/python Reference/updater.py              # watch: update + keep services healthy
+venv/bin/python Reference/updater.py --restart    # update if needed, restart once, exit
+venv/bin/python Reference/updater.py --status     # show running service PIDs
+```
+
+The updater:
+
+- Stops every bot and listener process before starting exactly one of each in
+  the `DiscordBot` and `ReviveListener` tmux sessions. This includes copies
+  started outside tmux or from an old checkout.
+- Allows only one watcher at a time and stops older updater loops.
+- Checks once a minute that each service has exactly one process and restarts
+  them if not.
+- Keeps the Cloudflare tunnel, and its URL, running across restarts. Use
+  `--restart --new-tunnel` to force a new URL.
+- Keeps a crashed service's tmux pane open with its exit code.
+
 Discord commands:
 
 - Slash: `/ti` to run any CLI command string.
@@ -430,6 +458,10 @@ and warning stages.
 - If the first observation is already urgent/final, sends the most urgent
   applicable warning rather than several stale warnings together.
 - No warnings for expired chains, cooldowns or chains below the minimum.
+- If a chain that already received a warning ends, the next check posts a
+  **Chain broke** alert (mentioning the role) with the hit count it reached and
+  the remaining chain cooldown, or `none`. It is sent once. Chains that end
+  without a recent warning are not reported.
 - Alerts only mention the selected role. The role must be mentionable, or the
   bot must have Mention Everyone permission. `clear_role:true` removes the ping.
 - Failed delivery does not consume a warning stage, so the next check retries.

@@ -5,6 +5,8 @@ Top-level entry point. Routes CLI commands to the
 correct registered sync modules.
 """
 
+from pathlib import Path
+
 from services.container import ServiceContainer
 from core.manager import ModuleManager
 from utils.colors import Colors, bold, header, subheader, money, divider, box_header, muted, success, info, highlight, warning
@@ -687,12 +689,20 @@ class TornIntel:
         if action != "serve":
             raise ValueError(f"Unknown revive_listener action '{action}'")
 
-        self.services.revive_listener.serve(
-            host=host,
-            port=port,
-            poll_seconds=poll_seconds,
-            window_seconds=window_seconds,
-        )
+        with self._single_instance("revive_listener"):
+            self.services.revive_listener.serve(
+                host=host,
+                port=port,
+                poll_seconds=poll_seconds,
+                window_seconds=window_seconds,
+            )
+
+    def _single_instance(self, name):
+        from services.instance_lock import single_instance
+
+        database_path = getattr(self.services.settings, "database_path", None)
+        lock_dir = Path(database_path).resolve().parent if database_path else None
+        return single_instance(name, lock_dir=lock_dir)
 
     #######################################################
 
@@ -715,15 +725,16 @@ class TornIntel:
             else int(self.services.settings.discord_command_timeout)
         )
 
-        serve_discord_bot(
-            token=effective_token,
-            prefix=effective_prefix,
-            guild_id=effective_guild_id,
-            timeout_seconds=effective_timeout,
-            logger=self.services.logger,
-            settings=self.services.settings,
-            gateway=self.services.gateway,
-        )
+        with self._single_instance("discord_bot"):
+            serve_discord_bot(
+                token=effective_token,
+                prefix=effective_prefix,
+                guild_id=effective_guild_id,
+                timeout_seconds=effective_timeout,
+                logger=self.services.logger,
+                settings=self.services.settings,
+                gateway=self.services.gateway,
+            )
 
     #######################################################
 
